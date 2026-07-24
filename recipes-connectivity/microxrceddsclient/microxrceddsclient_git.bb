@@ -21,8 +21,6 @@ SRCREV = "711aef423edd1820347b866d1e4164832df35d04"
 
 PV = "2.0.1+git"
 
-S = "${WORKDIR}/git"
-
 inherit cmake
 
 # Mirror the configuration PX4 applies in

@@ -9,8 +9,6 @@ SRC_URI = "git://github.com/ros/genmsg.git;protocol=https;branch=noetic-devel \
 
 SRCREV = "393871225e1458d2a8db41761759e57ca01a1801"
 
-S = "${WORKDIR}/git"
-
 inherit python_setuptools_build_meta
 
 RDEPENDS:${PN} += "python3-core python3-math python3-empy"

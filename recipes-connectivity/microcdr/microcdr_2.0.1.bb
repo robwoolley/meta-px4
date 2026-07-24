@@ -15,8 +15,6 @@ SRC_URI = "git://github.com/eProsima/Micro-CDR.git;protocol=https;nobranch=1"
 # tag v2.0.1
 SRCREV = "3d1b17703c7cf4f22def2910bc845bdb5152d7b5"
 
-S = "${WORKDIR}/git"
-
 inherit cmake
 
 # Match the options PX4 passes when it builds the client itself

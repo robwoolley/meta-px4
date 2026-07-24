@@ -19,8 +19,6 @@ SRCREV = "314887ca403c2fb0a0316add22672102936ed36c"
 
 PV = "0.11+git"
 
-S = "${WORKDIR}/git"
-
 inherit cmake native
 
 # Feature set copied from PX4's configure-time idlc bootstrap in

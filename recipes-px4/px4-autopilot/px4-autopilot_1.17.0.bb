@@ -9,8 +9,6 @@ SRC_URI = "gitsm://github.com/PX4/PX4-Autopilot.git;protocol=https;branch=releas
 
 SRCREV = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"
 
-S = "${WORKDIR}/git"
-
 EXTRA_OECMAKE = " \
     -DCMAKE_INSTALL_PREFIX=/opt/px4 \
     -DCONFIG=px4_sitl_default \

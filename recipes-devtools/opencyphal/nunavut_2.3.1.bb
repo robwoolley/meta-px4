@@ -13,8 +13,6 @@ SRC_URI = "gitsm://github.com/OpenCyphal/nunavut.git;protocol=https;branch=main"
 
 SRCREV = "7ecfd68a38fc652d3bb40e1e97975ce78cc2c9b1"
 
-S = "${WORKDIR}/git"
-
 inherit setuptools3
 
 RDEPENDS:${PN} += "python3-core python3-doctest python3-io python3-json python3-logging python3-unittest"

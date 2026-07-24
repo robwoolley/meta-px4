@@ -9,8 +9,6 @@ SRC_URI = "gitsm://github.com/PX4/pyulog.git;protocol=https;branch=main"
 
 SRCREV = "3cf17793f14709713ab297d3743314c658874068"
 
-S = "${WORKDIR}/git"
-
 inherit python_setuptools_build_meta setuptools3
 
 RDEPENDS:${PN} += "python3-core python3-crypt python3-io python3-json python3-sqlite3 python3-unittest"
