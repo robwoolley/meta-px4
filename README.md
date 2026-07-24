@@ -1,63 +1,97 @@
-# meta-aerospace
+# PX4 Autopilot
 
-An OpenEmbedded/Yocto layer providing recipes for open-source aerospace
-flight software frameworks, targeting embedded Linux — including the
-ELISA [Space Grade Linux](https://elisa.tech/space-grade-linux-sig/)
-(SGL) distribution.
+An OpenEmbedded/Yocto layer providing recipes for 
+OpenEmbedded recipes for building [PX4/PX4-Autopilot](https://github.com/PX4/PX4-Autopilot).
 
-## Contents
+## Layout
 
-| Framework | Website | Source | Documentation | Main recipes |
-|---|---|---|---|---|
-| NASA Core Flight System (cFS) | [core-flight-system](https://etd.gsfc.nasa.gov/capabilities/core-flight-system/) | [nasa/cFS](https://github.com/nasa/cFS) | [README.cfs.md](README.cfs.md) | `cfs`, `cfs-hosttools-native`, `cfs-native-std-native` |
-| NASA F Prime | [fprime.jpl.nasa.gov](https://fprime.jpl.nasa.gov) | [nasa/fprime](https://github.com/nasa/fprime) | [README.fprime.md](README.fprime.md) | `fprime-ref`, `fprime-fpp-native`, `python3-fprime-tools` |
-| PX4 Autopilot | [px4.io](https://px4.io) | [PX4/PX4-Autopilot](https://github.com/PX4/PX4-Autopilot) | [README.px4.md](README.px4.md) | `px4-autopilot`, `microcdr`, `microxrceddsclient`, `cyclonedds-px4-native` |
+| Recipe | Purpose |
+|---|---|
+| `px4-autopilot` | The flight stack, built with `cmake.bbclass` against PX4's top-level CMakeLists (`-DCONFIG=${PX4_CONFIG}`). |
+| `microcdr` | eProsima Micro CDR, normally cloned from GitHub *at compile time* by the Micro-XRCE-DDS-Client SuperBuild. |
+| `microxrceddsclient` | eProsima Micro XRCE-DDS Client (PX4 fork), normally built by PX4 as a nested `ExternalProject_Add`. |
+| `cyclonedds-px4-native` | Host `idlc` with the `cdrstream-desc` feature, normally bootstrapped by PX4 at configure time with a hardcoded `/usr/bin/gcc`. |
 
-Supporting recipes live in [recipes-devtools/](recipes-devtools/)
-(host tools and python modules not provided by oe-core/meta-python) and
-[recipes-connectivity/](recipes-connectivity/) (eProsima Micro XRCE-DDS
-libraries used by PX4).
-
-## Quick start (with kas, on Space Grade Linux)
+## Quick start (with kas, on ELISA Space Grade Linux)
 
 Clone this layer:
 
 ```sh
-git clone <this repo> layers/meta-aerospace
+git clone https://github.com/robwoolley/meta-px4 layers/meta-px4
 ```
 
 Then build **one** of the following kas configurations, depending on the
 framework you want. Each builds `core-image-minimal` for `qemuarm64` on
 top of the SGL scarthgap configuration:
-
 ```sh
-# NASA cFS
-kas build layers/meta-aerospace/kas/cfs-sgl-qemuarm64.yml
+kas build layers/meta-px4/kas/px4-sgl-qemuarm64.yml
 ```
 
-```sh
-# NASA F Prime
-kas build layers/meta-aerospace/kas/fprime-sgl-qemuarm64.yml
-```
+This builds `core-image-minimal` for `qemuarm64` with `px4-autopilot`
+installed (default board config `px4_sitl_default`, see below).
 
-```sh
-# PX4 Autopilot
-kas build layers/meta-aerospace/kas/px4-sgl-qemuarm64.yml
-```
+## Carried patches (px4-autopilot)
 
-See the per-framework READMEs linked above for what gets installed and
-for design notes on each set of recipes.
+1. **kconfig toolchain guard** — PX4's `cmake/kconfig.cmake` force-overrides
+   `CMAKE_TOOLCHAIN_FILE` from the board config (`CONFIG_BOARD_TOOLCHAIN`),
+   clobbering the toolchain file bitbake passes and mis-directing any
+   subproject that forwards it. The patch makes the board toolchain a
+   default only.
+2. **`UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS`** — links
+   `libmicroxrcedds_client.a`/`libmicrocdr.a` + headers from the target
+   sysroot instead of running the nested client build (which fetches
+   Micro-CDR from the network).
+3. **`PX4_BUILD_IDLC=OFF`** — skips the configure-time `git submodule` calls
+   and host-gcc CycloneDDS bootstrap; `idlc` is taken from the native
+   sysroot via PATH (cyclonedds' own `Generate.cmake` does
+   `find_program(idlc)` when cross-compiling). Only relevant when the board
+   config enables `CONFIG_LIB_CDRSTREAM`.
 
-## Space Grade Linux and ELISA
+## Version coupling — read before bumping SRCREV
 
-This layer is developed in the context of the
-[ELISA](https://elisa.tech/) Aerospace Working Group, now continued as
-the [Space Grade Linux Special Interest
-Group](https://elisa.tech/space-grade-linux-sig/)
-([aerospace mailing list](https://lists.elisa.tech/g/aerospace),
-[space-grade-linux mailing list](https://lists.elisa.tech/g/space-grade-linux)).
-The SGL reference distribution lives at
-[elisa-tech/meta-sgl](https://github.com/elisa-tech/meta-sgl).
+When you bump `px4-autopilot`'s SRCREV you **must** re-sync the subproject
+recipes to PX4's submodule pins (`git submodule status` in the PX4 tree):
+
+- `microxrceddsclient` SRCREV ← `src/modules/uxrce_dds_client/Micro-XRCE-DDS-Client`
+  (or `…-v3` when the config sets `CONFIG_UXRCE_DDS_CLIENT_USE_DDS_V3`;
+  then also switch `microcdr` to 2.0.2 — the client does
+  `find_package(microcdr <ver> EXACT)`).
+- `cyclonedds-px4-native` SRCREV ← `src/lib/cdrstream/cyclonedds`
+  (host idlc and the target-side cdr serializer compiled into PX4 must
+  come from the same sources).
+- The `UCLIENT_PROFILE_*` options in `microxrceddsclient` must continue to
+  match `src/modules/uxrce_dds_client/CMakeLists.txt` — they change the
+  client's config header and ABI.
+
+## Selecting the board
+
+`PX4_CONFIG ?= "px4_sitl_default"` — override in a bbappend or your distro
+config with any **posix**-platform config (e.g. `emlid_navio2_default`).
+
+## Known limitations / out of scope
+
+- **NuttX configs**: they spawn nested full PX4 builds (px4io coprocessor
+  firmware, ROMFS UAVCAN peripheral firmware) that this layer does not
+  handle.
+- **Simulators**: the gazebo-classic / gz / jsbsim / flightgear
+  ExternalProjects are guarded by `find_package` of the simulator dev libs
+  and stay disabled as long as those are not in `DEPENDS`. The nested `gz`
+  project forwards no toolchain settings, so do not enable it without
+  packaging it separately.
+- **Board extras**: `beaglebone/blue` fetches librobotcontrol from GitHub,
+  `modalai/voxl2` builds libfc-sensor-api at configure time — package these
+  separately if you target those boards.
+- **Debug builds**: `src/drivers/uavcan/libdronecan` downloads googletest at
+  configure time when `CMAKE_BUILD_TYPE=Debug` and the DroneCAN driver is
+  enabled. Keep the default Release build type or patch it out.
+- **Big-endian targets**: `microcdr` is built with default (little-endian)
+  endianness config; pass `-DCONFIG_BIG_ENDIANNESS=ON` for BE machines.
+- The python `-native` dependencies come from oe-core and
+  meta-openembedded/meta-python (`kconfiglib`, `jsonschema`, `matplotlib`,
+  …); the ones neither provides (`empy`, `lark-parser`, `pyros-genmsg`,
+  `pymavlink`, `pyulog`, `nunavut`) are carried in this layer under
+  `recipes-devtools/`, along with a `cerberus` newer than meta-python's.
+  PX4 requires empy < 4 (the layer's 3.3.2 recipe satisfies this).
 
 ## Dependencies
 
@@ -67,17 +101,13 @@ The SGL reference distribution lives at
   URI: https://github.com/openembedded/meta-openembedded.git (meta-python)
   branch: scarthgap
 
-The layer is compatible with Yocto scarthgap (5.0). PX4 additionally
-uses python modules from the wider meta-openembedded collection; the kas
-configurations above pull in everything required via SGL.
-
-## Adding the meta-aerospace layer to your build
-
-Run 'bitbake-layers add-layer meta-aerospace'
+The layer is compatible with Yocto scarthgap (5.0) and wrynose (6.0).
+PX4 additionally uses python modules from the wider meta-openembedded
+collection; the kas configurations above pull in everything required via SGL.
 
 ## Patches
 
-Please submit any patches against the meta-aerospace layer to the
+Please submit any patches against the meta-px4 layer to the
 maintainer:
 
 Maintainer: Rob Woolley <rob.woolley@windriver.com>
