@@ -5,6 +5,8 @@ for access to hrt_absolute_time.
 
 We replace the include on the header with a external function prototype.
 
+Upstream-Status: Inappropriate [oe-specific]
+
 Signed-off-By: Rob Woolley <rob.woolley@windriver.com>
 
 diff --git a/src/c/util/time.c b/src/c/util/time.c
