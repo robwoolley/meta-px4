@@ -23,3 +23,9 @@ FILES:${PN} += " \
     /opt/px4/etc \
     /opt/px4/share \
 "
+
+# ERROR: px4-autopilot-1.17.0-r0 do_package_qa: QA Issue: File /opt/px4/bin/px4 in package px4-autopilot contains reference to TMPDIR [buildpaths]
+INSANE_SKIP:${PN}:append = " buildpaths"
+
+# Ignore all the buildpaths in the comments of the generated source files
+INSANE_SKIP:${PN}-src:append = " buildpaths"
