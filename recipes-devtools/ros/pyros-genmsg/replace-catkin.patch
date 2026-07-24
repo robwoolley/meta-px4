@@ -1,3 +1,9 @@
+Replace catkin build with plain setuptools packaging
+
+Upstream-Status: Inappropriate [oe-specific]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+
 From c67c16b018a106e1114c956986e1aa231f53fc77 Mon Sep 17 00:00:00 2001
 From: Rob Woolley <rob.woolley@windriver.com>
 Date: Thu, 16 Jul 2026 07:46:01 -0400

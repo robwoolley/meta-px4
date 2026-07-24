@@ -2,6 +2,8 @@ Replace DPKG_PROGRAM with a PX4_PACKAGE option
 
 This allows us to conditionally enable packaging on the command-line.
 
+Upstream-Status: Inappropriate [oe-specific]
+
 Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
 
 --- a/platforms/posix/CMakeLists.txt
