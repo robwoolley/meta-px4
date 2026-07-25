@@ -216,7 +216,7 @@ machine-checkable acceptance criteria) is merged.
 |---|-----------|------|-----------------|
 | M0 | Build-input audit of `px4_fmu-v6x_default` + toolchain ADR | folded into 001 + this doc | Inventory of network fetches, submodules, host tools, nested builds; §4.1 decided |
 | M1 | `pixhawk-6x` machine + toolchain bring-up | [001](001-machine-pixhawk-6x.md) | `baremetal-helloworld` output on emulated UART in Renode, in CI |
-| M2 | Offline `px4-firmware` / `px4-io-firmware` / `px4-bootloader` recipes | 002 (TBD) | `.px4`/`.elf` deployed; builds with `BB_NO_NETWORK=1`; two builds byte-comparable |
+| M2 | Offline `px4-firmware` / `px4-io-firmware` / `px4-bootloader` recipes | [002](002-px4-firmware.md) | `.px4`/`.elf` deployed; builds with `BB_NO_NETWORK=1`; two builds byte-comparable |
 | M3 | PX4 boots in Renode | 003 (TBD) | Robot test: boot ELF → `nsh>` → `uorb status`, `ver all` pass |
 | M4 | SIH-in-Renode simulation + MAVLink bridge (mavlink-router recipe on the companion side) | 004 (TBD) | Scripted MAVSDK arm→takeoff→land against Renode in CI |
 | M5 | Hardware validation on Pixhawk 6X | 005 (TBD) | Boots from OE-built `.px4` via `px_uploader.py`; all sensor drivers probe |
