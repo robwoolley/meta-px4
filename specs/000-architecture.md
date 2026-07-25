@@ -138,17 +138,43 @@ the ROMFS. In this layer:
   it to the ROMFS generator, with the nested build disabled.
 - Same pattern for `px4-bootloader` (`px4_fmu-v6x_bootloader` config).
 
-### 4.3 Native/python DEPENDS: no new gap expected
+### 4.3 Native/python DEPENDS: confirmed by a full build, not just resolution
 
 Unlike an earlier (mistaken) draft of this spec, M0 confirmed the
 posix recipe's full native DEPENDS list — including the packages this
 layer carries itself (`empy`, `cerberus`, `pyros-genmsg`, `pymavlink`,
 `pyulog`, `nunavut`, `lark-parser`) plus everything from oe-core and
 meta-openembedded/meta-python (`numpy`, `matplotlib`, `sympy`, `lxml`,
-`pycryptodome`, etc.) — resolves and builds today. NuttX/fmu-v6x may
-pull in additional PX4 submodules or host tools the posix config
-doesn't need (tensorflow_lite_micro, mip_sdk, sbgECom drivers, etc.);
-auditing that delta is M0's remaining job (§9).
+`pycryptodome`, etc.) — resolves *and a full `bitbake px4-autopilot`
+build completes*, producing a working `px4` binary (verified by
+running it directly against its own recipe-sysroot and getting
+correct `--help` output). This took three real fixes surfaced by
+actually running the build, not just checking `bitbake -e`:
+
+1. `python3-empy.inc` set `S` relative to `${WORKDIR}` instead of
+   `${UNPACKDIR}`, a bitbake 2.18/wrynose compatibility break (same
+   class of issue already fixed elsewhere in this layer for
+   git-fetched recipes; this one fetches a tarball with a custom
+   `SRCNAME` so the line had to be repointed, not dropped).
+2. `pymavlink`'s upstream `setup.py` declares
+   `setup_requires=['future']`, which setuptools' legacy
+   `fetch_build_eggs` mechanism tries to satisfy via `pip wheel` from
+   PyPI at build time regardless of what's already staged — failing
+   outright under network isolation. Patched it out and added the
+   already-available `python3-future-native` to `DEPENDS` so nothing
+   is actually lost.
+3. `px4-autopilot_1.17.0.bb`'s `EXTRA_OECMAKE` never set
+   `UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON`, despite the option (and the
+   patch that adds it) existing specifically so PX4 links this
+   layer's own `microxrceddsclient`/`microcdr` recipes instead of
+   running its own network-fetching nested build. The flag was simply
+   missing from the recipe.
+
+NuttX/fmu-v6x may still pull in additional PX4 submodules or host
+tools the posix config doesn't need (tensorflow_lite_micro, mip_sdk,
+sbgECom drivers, etc.), and may hit its own version of fix #3 above if
+any nested-build CMake options aren't wired the same way for the
+NuttX config; auditing that delta is M0's remaining job (§9).
 
 ### 4.4 Firmware is deploy-only
 
