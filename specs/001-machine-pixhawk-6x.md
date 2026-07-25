@@ -140,11 +140,33 @@ this spec's PR:
 
 ## 6. Implementation record (fill during/after implementation)
 
+**Interim validation done 2026-07-25** (against `machine/qemuarm`, an
+oe-core stock machine — *not* yet `pixhawk-6x`/Cortex-M7, see caveat
+below): `TCLIBC = "baremetal"` + `bitbake baremetal-helloworld` in a
+bitbake-setup `sitl`/`pixhawk6x`-style environment (oe-core + this
+layer) completed all 2023 tasks with zero errors (3 WARNINGs, all
+transient upstream-mirror `do_fetch` fallbacks, not `BB_NO_NETWORK=1`
+clean — REQ-3's offline requirement is not yet verified strictly).
+The resulting `baremetal-helloworld-image-qemuarm.elf` (ARM EABI5,
+statically linked, built against the `cortexa15t2hf-neon-oe-eabi`
+tune qemuarm defaults to) was run directly with `qemu-system-arm -M
+virt,highmem=off -cpu cortex-a15 -kernel ...elf` and printed `Hello
+OpenEmbedded on ARM!` — a genuine, executed confirmation of the
+baremetal toolchain path, not just a green build log.
+
+**What this does and doesn't confirm:** it validates that
+`TCLIBC=baremetal` + this layer coexisting on `BBLAYERS` + oe-core's
+baremetal image class all work together end-to-end on `wrynose`. It
+does **not** yet validate REQ-1 (no `pixhawk-6x` MACHINE or
+`fpv5-d16`/Cortex-M7 tune exists yet), REQ-4/AC-2 (ran directly under
+`qemu-system-arm`, not Renode/`stm32h743.repl`), or REQ-3's strict
+`BB_NO_NETWORK=1` offline requirement.
+
 | Item | Decision / evidence |
 |---|---|
-| oe-core tune include + DEFAULTTUNE | _tbd_ |
+| oe-core tune include + DEFAULTTUNE | _tbd — qemuarm's default (`cortexa15t2hf-neon-oe-eabi`) confirmed working for the baremetal-image class in general; the actual `fpv5-d16` Cortex-M7 tune is still unresearched_ |
 | fpv5-d16 availability on wrynose | _tbd_ |
-| TCLIBC for M1 | _tbd_ |
-| Renode version tested | _tbd_ |
+| TCLIBC for M1 | **`"baremetal"` confirmed working** for oe-core's `baremetal-helloworld` on `wrynose` (see interim validation above) |
+| Renode version tested | _tbd — not yet attempted; interim validation used `qemu-system-arm` directly instead_ |
 | Toolchain ADR outcome (000 §4.1) | _tbd_ |
 | M0 audit artifact links | _tbd_ |
