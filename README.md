@@ -72,7 +72,8 @@ config with any **posix**-platform config (e.g. `emlid_navio2_default`).
 
 - **NuttX configs**: they spawn nested full PX4 builds (px4io coprocessor
   firmware, ROMFS UAVCAN peripheral firmware) that this layer does not
-  handle.
+  handle yet — see `specs/000-architecture.md` for the planned
+  STM32H7/Pixhawk 6X firmware support.
 - **Simulators**: the gazebo-classic / gz / jsbsim / flightgear
   ExternalProjects are guarded by `find_package` of the simulator dev libs
   and stay disabled as long as those are not in `DEPENDS`. The nested `gz`
