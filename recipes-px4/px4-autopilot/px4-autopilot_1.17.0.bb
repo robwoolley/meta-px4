@@ -16,6 +16,7 @@ EXTRA_OECMAKE = " \
     -DCONFIG=px4_sitl_default \
     -DPX4_PACKAGE=ON \
     -DPX4_BINARY_DIR=/opt/px4 \
+    -DUXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON \
 "
 
 FILES:${PN} += "/opt/px4"
