@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Sat, 25 Jul 2026 17:38:00 -0400
+Subject: [PATCH] setup.py: drop setup_requires=['future']
+
+setuptools' legacy setup_requires mechanism (_install_setup_requires /
+fetch_build_eggs) unconditionally tries to `pip wheel` the listed
+package from PyPI at build time, regardless of what is already staged
+in the (native) sysroot. In an offline/network-isolated bitbake build
+this fails outright:
+
+  distutils.errors.DistutilsError: Command [...'pip', ..., 'wheel',
+  ..., 'future'] returned non-zero exit status 1.
+  ERROR: Could not find a version that satisfies the requirement future
+
+future is still listed in install_requires and is provided at build
+time via the recipe's DEPENDS on python3-future-native, so dropping
+setup_requires only removes the redundant (and here, broken) fetch
+path -- it does not change what mavgen actually has available.
+
+Upstream-Status: Pending
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ setup.py | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/setup.py b/setup.py
+index 0000000..0000000 100644
+--- a/setup.py
++++ b/setup.py
+@@ -174,9 +174,6 @@ setup(name='pymavlink',
+             'future',
+             'lxml',
+        ],
+-       setup_requires=[
+-           'future'  # future is required by mavgen, included by this file
+-       ],
+        cmdclass={'build_py': custom_build_py},
+        ext_modules = extensions
+        )
