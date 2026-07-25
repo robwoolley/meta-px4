@@ -7,6 +7,6 @@ SRCNAME = "empy"
 SRC_URI = "http://www.alcyone.com/software/empy/empy-${PV}.tar.gz"
 SRC_URI[sha256sum] = "99f016af2770c48ab57a65df7aae251360dc69a1514c15851458a71d4ddfea9c"
 
-S = "${WORKDIR}/${SRCNAME}-${PV}"
+S = "${UNPACKDIR}/${SRCNAME}-${PV}"
 
 BBCLASSEXTEND = "native nativesdk"
