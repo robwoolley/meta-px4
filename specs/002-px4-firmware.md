@@ -1,0 +1,200 @@
+# Spec 002 (M2): Offline PX4 NuttX firmware recipes
+
+- **Status:** Draft
+- **Created:** 2026-07-26
+- **Depends on:** [000-architecture.md](000-architecture.md),
+  [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (M1 must have
+  landed: `pixhawk-6x` MACHINE + toolchain bring-up validated).
+- **Delivers:** `px4-firmware`, `px4-io-firmware`, and
+  `px4-bootloader` recipes that cross-build `px4_fmu-v6x_default`
+  (and its px4io/bootloader companions) fully offline, producing
+  `.elf`/`.px4` deploy artifacts.
+
+## 1. Rationale
+
+M1 proves the machine/toolchain/Renode triad against a trivial
+helloworld. This milestone puts real PX4/NuttX code through that same
+pipeline for the first time. Everything here is grounded in the
+actual `release/1.17` source tree (SRCREV
+`d6f12ad1c4f70ad3230afd7d86e971421e02fef4`, the same one
+`px4-autopilot_1.17.0.bb` already pins) — inspected directly rather
+than assumed, per §2 below.
+
+## 2. M0 findings (fmu-v6x board audit, done against the real tree)
+
+Checked directly in
+`boards/px4/fmu-v6x/{default,bootloader}.px4board`,
+`boards/px4/fmu-v6x/nuttx-config/`, and `boards/px4/io-v2/default.px4board`:
+
+- **Toolchain/tune**: `CONFIG_BOARD_TOOLCHAIN="arm-none-eabi"`,
+  `CONFIG_BOARD_ARCHITECTURE="cortex-m7"` — confirms spec 001 REQ-1's
+  assumption directly from PX4's own board config, not inference.
+- **px4io is required**: `default.px4board` sets
+  `CONFIG_DRIVERS_PX4IO=y` (the FMU-side driver that talks to the IO
+  coprocessor). `boards/px4/io-v2/default.px4board` sets
+  `CONFIG_BOARD_ARCHITECTURE="cortex-m3"`,
+  `CONFIG_MODULES_PX4IOFIRMWARE=y`, `CONFIG_BOARD_CONSTRAINED_FLASH=y`
+  — confirms spec 000 §4.2's nested-build assumption: `px4_io-v2_default`
+  is a real, separate, Cortex-M3 NuttX board build.
+- **Bootloader is a separate NuttX profile**: fmu-v6x's
+  `nuttx-config/` has sibling `nsh/` and `bootloader/` subdirectories
+  (plus `include/`, `scripts/`, a shared `Kconfig`) — `px4_fmu-v6x_bootloader`
+  is a real, distinct build target, not synthesized.
+- **Console UART**: `nuttx-config/nsh/defconfig` sets
+  `CONFIG_USART3_SERIAL_CONSOLE=y` — feeds spec 001 REQ-6 and M3's
+  Renode UART wiring.
+- **UXRCE-DDS is enabled**: `default.px4board` sets
+  `CONFIG_MODULES_UXRCE_DDS_CLIENT=y`. Given M0's posix-build
+  regression check (spec 000 §4.3, fix #3) found
+  `px4-autopilot_1.17.0.bb` was *missing*
+  `-DUXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON` despite needing it, **the
+  `px4-firmware` recipe must not repeat that mistake**: verify this
+  flag (or its NuttX-config equivalent) is actually wired before
+  declaring the recipe done, don't assume the posix fix's lesson
+  transfers automatically.
+- **`CONFIG_LIB_CDRSTREAM` status is NOT yet confirmed for fmu-v6x** —
+  a plain `grep` of `default.px4board` found no direct reference
+  (unlike `CONFIG_MODULES_UXRCE_DDS_CLIENT`, which appears literally).
+  This does not prove it's off: `.px4board` files only list deltas
+  from Kconfig defaults, and CDRSTREAM may be pulled in transitively
+  by the UXRCE-DDS client's Kconfig `select`. **This must be resolved
+  by an actual `menuconfig`/Kconfig evaluation, not another grep**,
+  before deciding whether `px4-firmware` needs
+  `-DPX4_BUILD_IDLC=OFF` the way `px4-autopilot` (posix) confirmed it
+  did not.
+- **Submodule pins at this SRCREV** (`git submodule status` in the
+  real tree): NuttX apps
+  `e37940d8535f603a16b8f6f21c21edaf584218aa` (nuttx-11.0.0-5-g...),
+  NuttX kernel `fb2fadf6f599c1406f052db013efd00a2518e72c`
+  (nuttx-8.2-10680-g...). `tensorflow_lite_micro`, `mip_sdk`,
+  `sbgECom`, and `src/drivers/gps/devices` are present as submodules
+  repo-wide regardless of board; whether fmu-v6x's CMake actually
+  compiles them depends on which `CONFIG_DRIVERS_INS_*`/GPS options
+  `default.px4board` enables — not yet audited line-by-line here
+  (do so during implementation, not by re-grepping this spec later).
+
+## 3. Requirements
+
+- **REQ-1** — `px4-firmware_1.17.0.bb` builds `-DCONFIG=px4_fmu-v6x_default`
+  against the same PX4 SRCREV as `px4-autopilot_1.17.0.bb`
+  (`d6f12ad1c4f70ad3230afd7d86e971421e02fef4`), following this layer's
+  one-recipe-per-PX4-version convention (§4 of spec 000).
+- **REQ-2** — No network access during `do_configure`/`do_compile`:
+  all submodules fetched via `gitsm://` + pinned `SRCREV`, same as the
+  posix recipe. `GIT_SUBMODULES_ARE_EVIL=1` carried over.
+- **REQ-3** — The `UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON` /
+  `PX4_BUILD_IDLC` question from §2 is resolved with evidence (not
+  assumption) and reflected in `EXTRA_OECMAKE`, exactly as thoroughly
+  as the posix recipe's fix #3 was — this is the single most likely
+  repeat-failure mode given it already bit the posix build once.
+- **REQ-4** — `px4-io-firmware_1.17.0.bb` builds `px4_io-v2_default`
+  (Cortex-M3) as its own recipe/build context (multiconfig or
+  documented in-recipe nested build per spec 000 §4.2), producing the
+  `.bin` that `px4-firmware`'s ROMFS generation consumes.
+- **REQ-5** — `px4-bootloader_1.17.0.bb` builds
+  `px4_fmu-v6x_bootloader`.
+- **REQ-6** — Firmware recipes inherit `deploy` (or
+  `baremetal-image`, per spec 001 §4.1's M1 findings on which fits
+  better); outputs (`.elf`, `.bin`, `.px4`) land in
+  `DEPLOY_DIR_IMAGE`. Nothing installs into a rootfs.
+- **REQ-7** — Two consecutive builds from clean `TMPDIR` (same inputs)
+  produce byte-identical `.elf`/`.px4` artifacts.
+- **REQ-8** — `bitbake mc:pixhawk6x:px4-firmware` succeeds with
+  `BB_NO_NETWORK="1"` after fetching.
+
+## 4. Non-goals
+
+- Booting in Renode (M3) or on hardware (M5) — this milestone is
+  build-only.
+- UAVCAN/DroneCAN ROMFS peripheral firmware.
+- Any board other than fmu-v6x/io-v2.
+- Resolving whatever the CDRSTREAM audit in §2 turns up beyond
+  wiring the correct `EXTRA_OECMAKE` flag — if it surfaces a deeper
+  PX4-side issue, that becomes its own follow-up, not scope creep
+  here.
+
+## 5. Design sketch
+
+### 5.1 Recipe layout
+
+```
+recipes-px4/
+├── px4-autopilot/            # existing, unchanged
+├── px4-firmware/
+│   ├── px4-firmware.inc      # shared with px4-io-firmware/px4-bootloader?
+│   │                         # evaluate during implementation whether
+│   │                         # the three targets share enough
+│   │                         # (SRC_URI, SRCREV, patches) to warrant
+│   │                         # a common .inc, following px4-autopilot's
+│   │                         # own .bb + .inc split.
+│   └── px4-firmware_1.17.0.bb
+├── px4-io-firmware/
+│   └── px4-io-firmware_1.17.0.bb
+└── px4-bootloader/
+    └── px4-bootloader_1.17.0.bb
+```
+
+### 5.2 Carried patches
+
+`px4-autopilot`'s five patches (`0001`–`0005`) target the posix build
+specifically (kconfig toolchain guard, UXRCE system-libs support, idlc
+support, sitl deb packaging, dpkg replacement). The NuttX firmware
+recipes need their own patch review:
+
+- Patch `0001` (kconfig toolchain guard) most likely **is** needed
+  here too — it exists specifically because
+  `cmake/kconfig.cmake` force-overrides `CMAKE_TOOLCHAIN_FILE` from
+  `CONFIG_BOARD_TOOLCHAIN`, and fmu-v6x's `default.px4board` sets
+  exactly that (`CONFIG_BOARD_TOOLCHAIN="arm-none-eabi"`). Verify
+  during implementation rather than assume.
+- Patches `0002`/`0003` (UXRCE system libs, idlc) are directly
+  relevant per REQ-3/§2's CDRSTREAM question.
+- Patches `0004`/`0005` (sitl deb packaging, dpkg replacement) are
+  posix-specific and almost certainly don't apply.
+
+### 5.3 Toolchain
+
+Per spec 001 §4.1's plan of record (Option B first): package
+`arm-none-eabi-gcc` as a cross recipe, let PX4's own
+`Toolchain-arm-none-eabi.cmake` drive flags. M1 will have already
+validated this path against `baremetal-helloworld` — if M1's `wrynose`
+tune/`DEFAULTTUNE` findings (spec 001 §6) don't cleanly cover
+`cortex-m7`+`arm-none-eabi` cross-compilation (as opposed to the
+bare-metal image class), that gap surfaces here first.
+
+### 5.4 px4io as a multiconfig dependency
+
+Per spec 000 §4.2: `px4-io-firmware` is Cortex-M3, a different tune
+than `px4-firmware`'s Cortex-M7. This needs either (a) a second
+multiconfig context (`pixhawk6x-io` or similar) whose deploy output
+`px4-firmware` consumes via a `mc:` dependency, or (b) accepting the
+nested PX4 build for just this sub-target if isolating it turns out
+to be more complexity than it's worth. Decide with evidence — try (a)
+first since it's the more OE-idiomatic and reproducible path, fall
+back to (b) only if it proves impractical.
+
+## 6. Acceptance criteria
+
+- **AC-1** — `bitbake mc:pixhawk6x:px4-firmware` succeeds offline
+  (REQ-2, REQ-8).
+- **AC-2** — `.elf` and `.px4` artifacts exist in `DEPLOY_DIR_IMAGE`
+  (REQ-6).
+- **AC-3** — Two clean builds produce byte-identical artifacts
+  (REQ-7).
+- **AC-4** — §2's CDRSTREAM question is answered with cited evidence
+  (a Kconfig/menuconfig trace, not a grep) and REQ-3 is satisfied.
+- **AC-5** — `px4-io-firmware` and `px4-bootloader` both build and
+  deploy (REQ-4, REQ-5).
+- **AC-6** — Existing `px4-autopilot` (posix) and M1's
+  `baremetal-helloworld` builds are provably unaffected by the new
+  recipes/layers.
+
+## 7. Implementation record (fill during/after implementation)
+
+| Item | Decision / evidence |
+|---|---|
+| CDRSTREAM status for fmu-v6x (§2) | _tbd_ |
+| Which of patches 0001-0003 apply to px4-firmware | _tbd_ |
+| px4io multiconfig vs. nested-build decision (§5.4) | _tbd_ |
+| Byte-reproducibility confirmed | _tbd_ |
+| Toolchain gap vs. M1 findings (§5.3) | _tbd_ |
