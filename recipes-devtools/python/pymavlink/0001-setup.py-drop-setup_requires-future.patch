@@ -1,6 +1,6 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 8263bf7d9c81c980b154cc6f8918b6c1cef9306d Mon Sep 17 00:00:00 2001
 From: Rob Woolley <rob.woolley@windriver.com>
-Date: Sat, 25 Jul 2026 17:38:00 -0400
+Date: Sat, 25 Jul 2026 17:47:01 -0400
 Subject: [PATCH] setup.py: drop setup_requires=['future']
 
 setuptools' legacy setup_requires mechanism (_install_setup_requires /
@@ -26,10 +26,10 @@ Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
  1 file changed, 3 deletions(-)
 
 diff --git a/setup.py b/setup.py
-index 0000000..0000000 100644
+index dbcfb87..8d4a571 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -174,9 +174,6 @@ setup(name='pymavlink',
+@@ -174,9 +174,6 @@ setup (name = 'pymavlink',
              'future',
              'lxml',
         ],
@@ -39,3 +39,6 @@ index 0000000..0000000 100644
         cmdclass={'build_py': custom_build_py},
         ext_modules = extensions
         )
+-- 
+2.39.5
+
