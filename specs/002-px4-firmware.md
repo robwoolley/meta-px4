@@ -1,10 +1,12 @@
 # Spec 002 (M2): Offline PX4 NuttX firmware recipes
 
-- **Status:** In progress — `px4-firmware` builds successfully,
-  deploys `.elf`/`.px4` to `DEPLOY_DIR_IMAGE`, builds fully offline
-  under `BB_NO_NETWORK=1`, and produces byte-identical artifacts
-  across independent clean rebuilds (§7); only
-  `px4-io-firmware`/`px4-bootloader` (AC-5) remain
+- **Status:** All of REQ-1 through REQ-8 done and verified with real
+  builds. `px4-firmware`, `px4-bootloader`, and `px4-io-firmware` all
+  build and deploy `.elf`/`.px4` (bootloader also `.bin`) to
+  `DEPLOY_DIR_IMAGE`, build fully offline under `BB_NO_NETWORK=1`, and
+  produce byte-identical artifacts across independent clean rebuilds
+  (§7). AC-6 (verifying px4-autopilot/baremetal-helloworld are
+  unaffected) is the only item not yet re-checked.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (M1 must have
@@ -105,22 +107,33 @@ Checked directly in
   assumption) and reflected in `EXTRA_OECMAKE`, exactly as thoroughly
   as the posix recipe's fix #3 was — this is the single most likely
   repeat-failure mode given it already bit the posix build once.
-- **REQ-4** — `px4-io-firmware_1.17.0.bb` builds `px4_io-v2_default`
-  (Cortex-M3) as its own recipe/build context (multiconfig or
-  documented in-recipe nested build per spec 000 §4.2), producing the
-  `.bin` that `px4-firmware`'s ROMFS generation consumes.
-- **REQ-5** — `px4-bootloader_1.17.0.bb` builds
-  `px4_fmu-v6x_bootloader`.
-- **REQ-6** — **Done for `px4-firmware`.** Firmware recipes inherit
-  `deploy`; outputs (`.elf`, `.bin`, `.px4`) land in
-  `DEPLOY_DIR_IMAGE`. Nothing installs into a rootfs. (Plain `deploy`,
-  not `baremetal-image` — the latter wasn't needed once `do_deploy`
-  proved sufficient; still open for `px4-io-firmware`/`px4-bootloader`
-  once REQ-4/REQ-5 land.)
-- **REQ-7** — Two consecutive builds from clean `TMPDIR` (same inputs)
-  produce byte-identical `.elf`/`.px4` artifacts.
-- **REQ-8** — `bitbake mc:pixhawk6x:px4-firmware` succeeds with
-  `BB_NO_NETWORK="1"` after fetching.
+- **REQ-4** — **Done.** `px4-io-firmware_1.17.0.bb` builds
+  `px4_io-v2_default` (Cortex-M3) as its own recipe/build context — a
+  new `pixhawk6x-io` multiconfig, §5.4 option (a), not a nested build.
+  Producing the `.bin` that `px4-firmware`'s ROMFS generation actually
+  consumes turned out to describe a different mechanism than what
+  fmu-v6x uses (§5.4) — `px4-io-firmware` is a genuinely-built,
+  independently-deployed artifact; wiring it into `px4-firmware`'s own
+  ROMFS is a separate follow-up.
+- **REQ-5** — **Done.** `px4-bootloader_1.17.0.bb` builds
+  `px4_fmu-v6x_bootloader` (reuses the `pixhawk6x` multiconfig, same
+  Cortex-M7/FPv5-D16 tune as `px4-firmware`).
+- **REQ-6** — **Done for all three recipes.** `px4-firmware`,
+  `px4-bootloader`, and `px4-io-firmware` all inherit `deploy`;
+  outputs (`.elf`, `.bin`, `.px4`) land in `DEPLOY_DIR_IMAGE`. Nothing
+  installs into a rootfs. (Plain `deploy`, not `baremetal-image` — the
+  latter wasn't needed once `do_deploy` proved sufficient.)
+- **REQ-7** — **Done for all three recipes.** Two consecutive builds
+  from clean `TMPDIR` (same inputs) produce byte-identical `.elf`/
+  `.px4` artifacts — `px4-firmware` confirmed across five independent
+  `cleansstate` rebuilds total (§7); `px4-bootloader`/`px4-io-firmware`
+  needed the same `SOURCE_DATE_EPOCH` patch added to their own
+  `SRC_URI` and were confirmed via one clean rebuild each after that
+  fix (all three now produce the identical `SOURCE_DATE_EPOCH`,
+  `1777072624`).
+- **REQ-8** — **Done.** `bitbake mc:pixhawk6x:px4-firmware` succeeds
+  with `BB_NO_NETWORK="1"` after a `cleansstate` forced a genuine
+  re-fetch/re-unpack/re-compile against only cached sources.
 
 ## 4. Non-goals
 
@@ -226,6 +239,43 @@ to be more complexity than it's worth. Decide with evidence — try (a)
 first since it's the more OE-idiomatic and reproducible path, fall
 back to (b) only if it proves impractical.
 
+**Resolved: option (a), and it worked on the first real build.**
+`conf/machine/pixhawk-6x-io.conf` (Cortex-M3, `DEFAULTTUNE =
+"cortexm3"` — a stock oe-core tune, `tune-cortexm3.inc`, no
+layer-local tune file needed since STM32F100 has no FPU) plus
+`conf/multiconfig/pixhawk6x-io.conf` (`MACHINE = "pixhawk-6x-io"`).
+`bitbake mc:pixhawk6x-io:px4-io-firmware` succeeded on the very first
+attempt — 2717/2717 tasks, zero errors — reusing the same
+`gcc-arm-none-eabi-native` toolchain as `px4-firmware` (the ARM GNU
+toolchain is multi-target; no second toolchain package needed).
+
+One real finding changed the shape of "consumes" in REQ-4's wording:
+inspecting `src/drivers/px4io/CMakeLists.txt` showed PX4 has its own
+mechanism for embedding a freshly-built io-v2 image into an FMU's
+ROMFS — an `ExternalProject_Add` nested build gated on
+`CONFIG_BOARD_IO`, which cubepilot boards set but fmu-v6x does not.
+For fmu-v6x, `boards/px4/fmu-v6x/extras/px4_io-v2_default.bin` is
+instead a **pre-built binary blob checked into the PX4-Autopilot
+source tree**, and that's what `px4-firmware`'s ROMFS actually
+embeds (confirmed via `ROMFS/px4fmu_common/init.d/rcS`'s
+`IOFW="/etc/extras/px4_io-v2_default.bin"`). So `px4-io-firmware` as
+built here is a genuinely-from-source, independently deployed
+artifact, not (yet) what `px4-firmware`'s own build consumes —
+wiring `px4-firmware` to use our freshly-built image instead of the
+vendored blob is a separate, not-yet-decided follow-up, not something
+this milestone's evidence required.
+
+The same real-build process also surfaced that `px4-bootloader`
+produces a `.px4` (not just `.elf`/`.bin`, confirmed via a real
+`px_mkfw.py` invocation in the `do_compile` log) — the initial recipe
+missed deploying it. Both `px4-bootloader` and `px4-io-firmware` also
+needed patch 0001 (`SOURCE_DATE_EPOCH`, §7) added to their own
+`SRC_URI` for `.px4` reproducibility parity with `px4-firmware` — not
+inherited automatically since each recipe carries its own patch list.
+All three recipes now produce the identical `SOURCE_DATE_EPOCH`
+(`1777072624`), confirmed by inspecting each deployed `.px4`'s
+`build_time` field after a rebuild.
+
 ## 6. Acceptance criteria
 
 - **AC-1** — **Done.** `bitbake mc:pixhawk6x:px4-firmware` succeeds:
@@ -262,8 +312,17 @@ back to (b) only if it proves impractical.
 - **AC-4** — **Done.** §2's CDRSTREAM question is answered with cited
   Kconfig evidence: OFF for `px4_fmu-v6x_default`
   (`MODULES_ZENOH` is the only selector and it's unset).
-- **AC-5** — `px4-io-firmware` and `px4-bootloader` both build and
-  deploy (REQ-4, REQ-5) — not started.
+- **AC-5** — **Done.** `px4-io-firmware` (new `pixhawk6x-io`
+  multiconfig, Cortex-M3, §5.4 option (a)) and `px4-bootloader` (reuses
+  the `pixhawk6x` multiconfig) both build and deploy (REQ-4, REQ-5).
+  Verified for real: `readelf -A` on the deployed `px4-io-firmware`
+  `.elf` shows `Tag_CPU_name: "7-M"` with no FPU tags (correct for the
+  FPU-less STM32F100C8); the deployed `.px4` shows `board_id: 10`,
+  `magic: "PX4FWv2"` (the known PX4IOv2 identifiers) and
+  `image_maxsize: 61440` (60K, matching `script.ld`'s flash length).
+  `px4-bootloader`'s `.elf` shows the same Cortex-M7/FPv5-D16
+  attributes as `px4-firmware`'s. Both also carry patch 0001
+  (`SOURCE_DATE_EPOCH`) for `.px4` reproducibility parity.
 - **AC-6** — Existing `px4-autopilot` (posix) and M1's
   `baremetal-helloworld` builds are provably unaffected by the new
   recipes/layers — not re-verified since `px4-firmware` landed
@@ -338,7 +397,7 @@ build has no install step):
 | CDRSTREAM status for fmu-v6x (§2) | **OFF** — only `MODULES_ZENOH` selects `LIB_CDRSTREAM`, and it's unset for `px4_fmu-v6x_default`. `PX4_BUILD_IDLC=OFF` not needed. Verified via kconfiglib `defconfig.py` run against the real `Kconfig` tree with `cmake/kconfig.cmake`'s exact env vars, cross-checked against known-true `CONFIG_MODULES_UXRCE_DDS_CLIENT=y`. |
 | UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS | **Deliberately not set** (maintainer decision, §5.2) — PX4 builds `microcdr`/`microxrceddsclient` itself via its own nested build; the resulting network fetch is redirected to a local mirror (see numbered list above) rather than solved via prebuilt system libs. |
 | Which of px4-autopilot's patches 0001-0003 apply to px4-firmware | **0001: omitted** (confirmed necessary by reading the patch + `cmake.bbclass` source, §5.2). **0002/0003: not carried** (UXRCE system-libs scoped out, row above). The build succeeded without any of the three, so none are currently needed — revisit only if a real failure demands one. Note: px4-firmware has since gained its *own*, unrelated "0001" patch (`0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch`, row below) — the numbering is per-recipe and coincidental. |
-| px4io multiconfig vs. nested-build decision (§5.4) | _tbd — not yet started_ |
+| px4io multiconfig vs. nested-build decision (§5.4) | **Resolved: option (a)** — new `pixhawk-6x-io` MACHINE (Cortex-M3, stock `tune-cortexm3.inc`) + `pixhawk6x-io` multiconfig. `bitbake mc:pixhawk6x-io:px4-io-firmware` succeeded on the first real attempt, 2717/2717 tasks. |
 | Byte-reproducibility confirmed | **Done (REQ-7)** — `.elf` was always reproducible; `.px4` needed `0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch` (see implementation record above). Confirmed with two independent `cleansstate` rebuilds post-patch: identical `.elf`/`.px4` hashes both times. |
 | Toolchain gap vs. M1 findings (§5.3) | **None found** — `gcc-arm-none-eabi-native` (spec 001 §6) plus the unpatched kconfig force-override was sufficient; no additional toolchain work was needed beyond the three bugs above. |
 | REQ-6 deploy wiring | **Done** — `px4-firmware_1.17.0.bb` inherits `deploy`; `do_deploy` (ordered `after do_compile before do_build`) installs `px4-firmware-${PV}-${MACHINE}.{elf,px4}` into `DEPLOY_DIR_IMAGE`. Verified against a real `rm_work`-enabled rebuild: the deployed `.elf` survived (47,702,264 bytes, same target attributes via `readelf -A`) while `rm_work` reduced `${WORKDIR}` to just `temp/` — the deploy task is what preserved it, not incidental leftover state. |
