@@ -1,0 +1,61 @@
+// Board overlay for the Holybro Pixhawk 6X FMU (STM32H753) over
+// Renode's stock STM32H743 CPU model (H753 is the same die plus
+// crypto peripherals irrelevant to boot -- spec 000 section 4.6).
+//
+// No memory-region deltas needed: checked every MEMORY region in the
+// real linker script (boards/px4/fmu-v6x/nuttx-config/scripts/
+// script.ld) against stm32h743.repl's stock objects and they match
+// exactly --
+//   ITCM_RAM  0x00000000/64K  == itcm
+//   FLASH     0x08020000/1920K (within flashBank1+flashBank2, which
+//                                together cover 0x08000000-0x08200000)
+//   DTCM1/2   0x20000000/128K == dtcm (combined)
+//   AXI_SRAM  0x24000000/512K == axiSram
+//   SRAM1     0x30000000/128K == sram1
+//   SRAM2     0x30020000/128K == sram2
+//   SRAM3     0x30040000/32K  == sram3
+//   SRAM4     0x38000000/64K  == sram4
+//   BKPRAM    0x38800000/4K   == backupSram
+//
+// Console UART is USART3 (CONFIG_USART3_SERIAL_CONSOLE=y, spec 002
+// section 2 / spec 003 section 2) -- already provided as `usart3` in
+// the base repl, no overlay needed for it either.
+using "platforms/cpus/stm32h743.repl"
+
+// PWR/RCC fidelity gap (spec 000 R2, spec 003 section 5.3), confirmed
+// by real boot attempts: NuttX's stm32h7x3xx_rcc.c has two
+// unconditional busy-waits back to back during clock config (no
+// existing NuttX config option disables either at this SRCREV --
+// checked, there is no CONFIG_STM32H7_PWR_IGNORE_ACTVOSRDY or
+// equivalent in PX4/NuttX@fb2fadf6):
+//   while ((getreg32(STM32_PWR_D3CR) & STM32_PWR_D3CR_VOSRDY) == 0) {}
+//   while ((getreg32(STM32_PWR_CSR1) & PWR_CSR1_ACTVOSRDY) == 0) {}
+// The base stm32h743.repl already tags D3CR (0x58024818) with 0x2000
+// for exactly the first loop, but a derived `.repl`'s own `sysbus:
+// init:` block *replaces* rather than appends to the base's (verified
+// empirically: overlaying only the CSR1 tag silently dropped the
+// base's D3CR tag, reproducing the second loop's hang one register
+// later). So this block repeats the base's D3CR tag alongside the new
+// CSR1 one (bit 13 = 0x2000 = ACTVOSRDY, offset 0x0004 from PWR_BASE
+// 0x58024800) -- entirely Renode-side, no PX4/NuttX source patch
+// needed.
+sysbus:
+    init:
+        Tag <0x58024818, 0x58024818> "D3CR" 0x2000
+        Tag <0x58024804, 0x58024804> "PWR_CSR1" 0x2000
+        // stm32_otgdev.c's USB OTG-FS power-up also busy-waits on
+        // PWR_CR3_USB33RDY (bit 26) before the console/NSH is even
+        // reached -- same class of gap, found the same way (a real
+        // boot hang at this exact address).
+        Tag <0x5802480C, 0x5802480C> "PWR_CR3" 0x04000000
+
+// stm32_spi.c's STM32H7 SPI driver polls SPI_SR (TXP/RXP/EOT/SUSP)
+// with NO bound or timeout at all (plain `while (...) ;`) during any
+// real transfer -- confirmed by reading the driver source, not
+// assumed. The base stm32h743.repl only models `spi4` as a real
+// SPI.STM32H7_SPI peripheral; spi5 (which fmu-v6x's sensors use) is
+// left as an inert `Tag` stub that always reads 0, so any transfer on
+// it hangs forever (a real boot hang at 0x40015014 = SPI5_BASE +
+// SPI_SR_OFFSET confirmed this). Modeling spi5 the same way the base
+// repl already models spi4 is the correct fix, not a workaround.
+spi5: SPI.STM32H7_SPI @ sysbus 0x40015000
