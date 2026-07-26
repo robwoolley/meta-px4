@@ -103,10 +103,10 @@ flight — against Renode, see [SIMULATION.md](SIMULATION.md).
 ## Dependencies
 
   URI: https://github.com/openembedded/openembedded-core.git
-  branch: scarthgap
+  branch: wrynose 
 
   URI: https://github.com/openembedded/meta-openembedded.git (meta-python)
-  branch: scarthgap
+  branch: wrynose
 
 The layer is compatible with Yocto scarthgap (5.0) and wrynose (6.0).
 PX4 additionally uses python modules from the wider meta-openembedded
