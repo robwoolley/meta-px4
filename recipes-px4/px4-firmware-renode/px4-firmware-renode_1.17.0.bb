@@ -19,10 +19,20 @@ require px4-firmware-renode.inc
 # model. This patch is deliberately carried only here, not in
 # px4-firmware: the real hardware build keeps DMA-based console I/O
 # unmodified.
+#
+# Patch 0003 (this recipe only): specs/004-sih-renode-mavlink.md REQ-1/
+# REQ-2. Enables CONFIG_MODULES_SIMULATION_SIMULATOR_SIH=y (PX4's onboard
+# flight-dynamics simulation, checked directly in PX4's own Kconfig --
+# default n, not enabled for fmu-v6x upstream) and forces
+# SYS_AUTOSTART=1100 (the existing 1100_rc_quad_x_sih.hil quadcopter
+# airframe) via rc.board_defaults, since there is no persistent
+# parameter storage in this environment for a runtime `param set` to
+# survive a reboot.
 SRC_URI = "gitsm://github.com/PX4/PX4-Autopilot.git;protocol=https;branch=release/1.17 \
            git://github.com/eProsima/Micro-CDR.git;protocol=https;nobranch=1;destsuffix=git/microcdr-mirror;name=microcdr \
            file://0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch \
            file://0002-boards-px4-fmu-v6x-disable-USART3-DMA-for-Renode.patch \
+           file://0003-boards-px4-fmu-v6x-enable-SIH-and-force-quad-X-SIH.patch \
 "
 
 SRCREV = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"
