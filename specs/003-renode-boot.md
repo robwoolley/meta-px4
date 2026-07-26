@@ -1,16 +1,21 @@
 # Spec 003 (M3): PX4 boots in Renode
 
-- **Status:** In progress — real boot attempts made significant,
+- **Status:** In progress — real boot attempts made substantial,
   evidence-based progress (§6): Renode installed, board `.repl`
-  written, and four distinct real fidelity gaps found and fixed
-  (two PWR busy-waits, one USB OTG busy-wait, `spi5` unmodeled).
-  Boot now reaches genuine PX4 application code (past all NuttX/RCC
-  clock bring-up) but is currently blocked by a fifth, deeper issue:
-  NuttX's task-delay/tick mechanism does not appear to advance
-  virtual time correctly under this configuration, turning a normally
-  *bounded* MTD driver retry into an effectively infinite tight loop.
-  NSH prompt not yet reached; REQ-4/AC-3 (and spec 001's deferred
-  REQ-4/AC-2) remain open pending that fix.
+  written, five distinct real fidelity gaps found and fixed so far
+  (two PWR busy-waits, one USB OTG busy-wait, `spi5` unmodeled, and a
+  DMA-based console UART retransmission bug — the last one root-caused
+  via `cpu PC`/`LR` sampling in Renode's interactive monitor to a
+  Renode DMA2 model gap, not a NuttX bug, and fixed via a new
+  Renode-only `px4-firmware-renode` recipe carrying one extra patch
+  that disables `CONFIG_USART3_TXDMA`/`RXDMA`). Verified directly: the
+  fix took the "failed to initialize mtd driver" message from 1.12
+  million+ repeats down to exactly once, followed by genuine new boot
+  output never reached before. Currently blocked by a sixth, much
+  smaller gap: `SDMMC2` is unmodeled (only ~3,157 occurrences, not
+  millions — a normal peripheral-probe gap like `spi5`'s, not another
+  deep issue). NSH prompt not yet reached; REQ-4/AC-3 (and spec 001's
+  deferred REQ-4/AC-2) remain open.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (REQ-4/AC-2
@@ -354,6 +359,42 @@ Two realistic fixes, not yet decided (see below): (a) disable
 relationship between M2 and M3: M3 was assumed to boot the *exact*
 M2-built `px4-firmware` artifact unmodified; option (a) would instead
 need a distinct, Renode-only build configuration.
+
+**Decided and implemented: option (a).** Added a new recipe,
+`px4-firmware-renode_1.17.0.bb` (`recipes-px4/px4-firmware-renode/`),
+identical to `px4-firmware` except it carries one additional patch
+(`0002-boards-px4-fmu-v6x-disable-USART3-DMA-for-Renode.patch`,
+generated with `git format-patch` against the pinned SRCREV) that
+flips `CONFIG_USART3_RXDMA`/`TXDMA` to `# ... is not set` in
+`boards/px4/fmu-v6x/nuttx-config/nsh/defconfig`, forcing
+interrupt-driven console I/O instead of DMA. The real hardware
+`px4-firmware` recipe is completely unaffected — this patch is
+carried only by the new recipe. Built successfully
+(`bitbake mc:pixhawk6x:px4-firmware-renode`, deploying
+`px4-firmware-renode-1.17.0-pixhawk-6x.{elf,px4}`).
+
+**Verified the fix directly against a real boot**: the "failed to
+initialize mtd driver" message that previously repeated over
+1.12 million times now appears **exactly once**, immediately followed
+by genuine subsequent boot output that was never reached before —
+`ERROR [PX4_MTD] mtd failure: -5 bus 2 address 0 class 1` (the
+expected, gracefully-handled failure, not a hang), `[boot] Rev 0x0 :
+Ver 0x0 V6X000`, `reset done, 10 ms`, `[boot] Fault Log info File No 4
+Length 3177 flags:0x01 state:1`, `[boot] Fault Log is Armed`. This
+conclusively confirms the root-cause diagnosis: the earlier "infinite
+loop" was entirely the DMA UART retransmission bug, not a problem
+with `px4_mtd.cpp`'s own retry logic or the scheduler.
+
+Boot now progresses to a **new, different, and far less severe**
+peripheral gap: repeated `ReadDoubleWord` from `0x48022434` (`SDMMC2`
+range, per the base repl's own `Tag <0x48022400, 0x480227FF>
+"SDMMC2"` — an inert stub, no real `SD.STM32HSDMMC` object modeled
+for it, unlike `SDMMC1` at `0x52007000` which the base repl does
+model). Only ~3,157 occurrences in a 90-second real-time run (versus
+1.12 million+ for the DMA bug) — this is a normal, bounded-looking
+peripheral-probe gap of the same general kind already fixed for
+`spi5`, not evidence of another deep timing issue. Not yet fixed —
+natural next step for continuing M3.
 
 ## 6. Implementation record
 
