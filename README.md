@@ -68,6 +68,12 @@ recipes to PX4's submodule pins (`git submodule status` in the PX4 tree):
 `PX4_CONFIG ?= "px4_sitl_default"` — override in a bbappend or your distro
 config with any **posix**-platform config (e.g. `emlid_navio2_default`).
 
+## Running the Pixhawk 6X simulation (Renode)
+
+For the STM32H7/NuttX firmware bring-up (`px4-firmware-renode`) and
+how to boot/run it — either a plain NSH smoke test or a SIH simulated
+flight — against Renode, see [SIMULATION.md](SIMULATION.md).
+
 ## Known limitations / out of scope
 
 - **NuttX configs**: they spawn nested full PX4 builds (px4io coprocessor
