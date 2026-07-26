@@ -1,0 +1,22 @@
+:name: Pixhawk 6X FMU boot
+:description: Boots the OE-built px4-firmware ELF (px4_fmu-v6x_default)
+    against Renode's STM32H743 CPU model, per specs/003-renode-boot.md.
+
+using sysbus
+$name?="pixhawk6x"
+mach create $name
+
+machine LoadPlatformDescription @recipes-renode/pixhawk6x/pixhawk6x.repl
+
+showAnalyzer usart3
+
+// $bin is expected to be set by the caller (robot test or `-e`
+// invocation) to the real DEPLOY_DIR_IMAGE path for
+// px4-firmware-<PV>-pixhawk-6x.elf -- no default is guessed here,
+// since a stale/wrong default would be worse than an explicit error.
+macro reset
+"""
+    sysbus LoadELF $bin
+"""
+
+runMacro $reset

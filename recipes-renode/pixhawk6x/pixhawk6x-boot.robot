@@ -1,0 +1,24 @@
+*** Variables ***
+${UART}                     sysbus.usart3
+# Override at invocation time, e.g.:
+#   renode-test pixhawk6x-boot.robot -v elf:/path/to/px4-firmware-1.17.0-pixhawk-6x.elf
+${ELF}                      @px4-firmware-1.17.0-pixhawk-6x.elf
+
+*** Test Cases ***
+PX4 Boots To NSH On Pixhawk 6X FMU
+    Execute Command             set bin ${ELF}
+    Execute Command             include @recipes-renode/pixhawk6x/pixhawk6x-boot.resc
+
+    Create Terminal Tester       ${UART}
+    Start Emulation
+
+    Wait For Line On Uart        NuttShell (NSH)             timeout=20
+    Wait For Prompt On Uart      nsh>                        timeout=20
+
+    Write Line To Uart           ver all
+    Wait For Line On Uart        HW arch                     timeout=10
+    Wait For Prompt On Uart      nsh>                         timeout=10
+
+    Write Line To Uart           uorb status
+    Wait For Line On Uart        uorb total subscribers       timeout=10
+    Wait For Prompt On Uart      nsh>                         timeout=10

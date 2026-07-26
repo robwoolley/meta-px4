@@ -1,6 +1,16 @@
 # Spec 003 (M3): PX4 boots in Renode
 
-- **Status:** Draft
+- **Status:** In progress — real boot attempts made significant,
+  evidence-based progress (§6): Renode installed, board `.repl`
+  written, and four distinct real fidelity gaps found and fixed
+  (two PWR busy-waits, one USB OTG busy-wait, `spi5` unmodeled).
+  Boot now reaches genuine PX4 application code (past all NuttX/RCC
+  clock bring-up) but is currently blocked by a fifth, deeper issue:
+  NuttX's task-delay/tick mechanism does not appear to advance
+  virtual time correctly under this configuration, turning a normally
+  *bounded* MTD driver retry into an effectively infinite tight loop.
+  NSH prompt not yet reached; REQ-4/AC-3 (and spec 001's deferred
+  REQ-4/AC-2) remain open pending that fix.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (REQ-4/AC-2
@@ -135,36 +145,105 @@ notes reference as tested, if such notes exist and are checked
 directly rather than assumed; otherwise a recent stable release,
 pinned and recorded, not "latest" left unpinned.
 
-### 5.3 Open question: does `px4_fmu-v6x_default` boot cleanly on Renode's H743 model as-is?
+### 5.3 Open question: does `px4_fmu-v6x_default` boot cleanly on Renode's H743 model as-is? — **Answered: no, five real gaps found so far**
 
-Not yet known — this is exactly what M3's real bring-up will answer.
-Spec 000 R2 already flags simplified PWR/RCC modeling as a known
-upstream Renode gap that *might* surface as a hang during NuttX's
-clock/power init sequence. Resolve with evidence: attempt the boot
-first with an unmodified NuttX board config; only reach for the
-`CONFIG_STM32H7_PWR_IGNORE_ACTVOSRDY`-style workaround (or any other
-board-config change) if a real failure demonstrates it's needed, and
-document exactly which failure justified it in §6.
+Resolved with evidence exactly as planned: attempted the boot with an
+unmodified NuttX board config first, fixed forward from each real
+failure in turn (not pre-guessed), documented below in order
+encountered. `CONFIG_STM32H7_PWR_IGNORE_ACTVOSRDY` (the workaround
+named as a possibility when this spec was drafted) turned out not to
+exist at all in PX4/NuttX@`fb2fadf6` — checked directly, not assumed —
+so all fixes below are Renode-side (`.repl` overlay), not NuttX source
+patches, which is the *less* invasive of the two paths spec 000 §4.6
+anticipated.
 
-## 6. Implementation record (fill during/after implementation)
+**Gaps found and fixed, in the order a real boot hits them:**
 
-_Not yet started._
+1. **`PWR_CSR1.ACTVOSRDY` (bit 13, `0x58024804`)** —
+   `stm32h7x3xx_rcc.c`'s clock config has an unconditional
+   `while ((getreg32(STM32_PWR_CSR1) & PWR_CSR1_ACTVOSRDY) == 0) {}`.
+   The base `stm32h743.repl` only tags the *adjacent* `D3CR` register
+   for the analogous VOSRDY loop, not this one. Fixed with a `Tag`
+   returning bit 13 set.
+2. **`PWR_D3CR.VOSRDY` (bit 13, `0x58024818`) — regression from fix
+   #1, not a new gap.** Renode's `.repl` format replaces rather than
+   appends a derived file's `sysbus: init:` block against the base's
+   own — confirmed empirically: adding *only* the CSR1 tag silently
+   dropped the base repl's own D3CR tag, reproducing the *next* loop's
+   hang one register later. Fixed by repeating the base's D3CR tag
+   alongside the new one in the same block.
+3. **`PWR_CR3.USB33RDY` (bit 26, `0x5802480C`)** — `stm32_otgdev.c`'s
+   USB OTG-FS device power-up busy-waits on this bit before the
+   console is even reached. Fixed with a `Tag`.
+4. **`spi5` entirely unmodeled** — the base repl only models `spi4` as
+   a real `SPI.STM32H7_SPI` peripheral; `spi5` (which fmu-v6x's
+   sensors use) is left an inert `Tag` stub returning 0 forever.
+   `stm32_spi.c`'s SPI driver has multiple unconditional,
+   *unbounded* `while (...) ;` waits on `SPI_SR` status bits (TXP/RXP/
+   EOT/SUSP) with no timeout at all — confirmed by reading the driver,
+   not assumed — so any real transfer on an unmodeled SPI bus hangs
+   forever. Fixed by modeling `spi5` the same way the base repl
+   already models `spi4` (a real peripheral object, not a workaround).
+
+After fix #4, the boot progresses **past all of NuttX's clock/power/
+USB/SPI-bus bring-up and reaches genuine PX4 application code** —
+confirmed by real `usart3` console output (PX4's own `PX4_ERR`-tagged
+log lines), not just continued silence. This is a substantial result:
+it validates the machine, toolchain, linker layout, and RCC/clock/USB/
+SPI-bus bring-up all work together for the first time.
+
+**Gap #5 — current blocker, not yet fixed: task-delay/tick fidelity.**
+Console output shows `ERROR [PX4_MTD] failed to initialize mtd driver`
+(from `platforms/nuttx/src/px4/common/px4_mtd.cpp`'s `ramtron_attach`,
+expected — no FRAM/RAMTRON chip is modeled behind `spi5`) repeating
+219,231 times in a 40-second real-time run. Read the source: this is
+normally a *bounded* loop (30 attempts, `spi_speed_hz` stepping down
+1MHz each try, `px4_usleep(10000)` between attempts — i.e. normally
+~300ms to give up once). The log's own virtual-time counter proves
+`usleep(10000)` (10ms requested) is actually costing only ~3.78
+*microseconds* of virtual time — a ~2600x speedup, not a hang or a
+reboot loop (virtual time is monotonically increasing throughout, at
+~3.78µs/iteration, definitively ruling out a reset loop, which
+would cost whole seconds of virtual time per cycle). NuttX's
+scheduler tick/task-delay mechanism is not advancing correctly under
+this Renode configuration, which turns what would be a normal,
+bounded "give up after ~300ms and move on" retry into an effective
+infinite tight loop that never reaches NSH. This is the same class of
+risk spec 000 R2 flagged for M4's SIH timing, but it turns out to
+already block M3's plain boot too — not confirmed root-caused yet
+(candidates: `SysTick`/NVIC tick modeling, or a different
+tickless/hardware-timer path NuttX uses that isn't obvious from
+`nsh/defconfig` alone — `CONFIG_SCHED_TICKLESS` is *not* set, so it
+should be plain SysTick-driven, which makes the finding more
+surprising and worth further investigation rather than working around
+blindly).
+
+## 6. Implementation record
 
 | Item | Decision / evidence |
 |---|---|
-| Renode version installed | _tbd_ |
-| stm32h743.repl peripheral names (UART numbering) | _tbd_ |
-| Boot result on first attempt (unmodified NuttX config) | _tbd_ |
-| PWR/RCC fidelity gap encountered? | _tbd_ |
+| Renode version installed | **1.16.1** (`renode-1.16.1.linux-portable-dotnet.tar.gz`, self-contained with bundled .NET runtime — no root/system dependency). Downloaded from the official GitHub release; SHA-256 verified against GitHub's own published digest before extracting. Installed under `oe-px4/tools/renode/` (host tooling, gitignored, same convention as `bitbake`/`bitbake-builds`). |
+| stm32h743.repl peripheral names (UART numbering) | Console is `usart3` (`UART.STM32F7_USART @ sysbus 0x40004800`), matching `CONFIG_USART3_SERIAL_CONSOLE=y`. Checked directly in the installed Renode's own copy of the platform file, not from memory of docs. |
+| Memory-region deltas needed | **None.** Every `MEMORY` region in the real `script.ld` (ITCM/FLASH/DTCM1+2/AXI_SRAM/SRAM1-4/BKPRAM) matches an existing `stm32h743.repl` object exactly, byte for byte — verified by direct comparison before writing the overlay, not assumed from the M1 flash/RAM constants alone. |
+| Boot result on first attempt (unmodified NuttX config, base repl) | **Hung immediately** on `PWR_CSR1.ACTVOSRDY` busy-wait (gap #1 above). |
+| PWR/RCC fidelity gap encountered? | **Yes — three separate busy-waits** (gaps #1-3 above), all fixed via `.repl` `Tag` overrides, no NuttX source patch (confirmed no existing NuttX config option covers any of them at this SRCREV). |
+| `spi5` fidelity gap | **Yes** (gap #4) — fixed by modeling it as `SPI.STM32H7_SPI`, matching the base repl's own treatment of `spi4`. |
+| Reached PX4 application code? | **Yes** — real `usart3` console output with PX4's own log tags, past all boot-time clock/power/USB/SPI-bus bring-up. |
+| NSH prompt reached? | **Not yet** — blocked by gap #5 (task-delay/tick fidelity, see above). |
 
 ## 7. Acceptance criteria
 
-- **AC-1** — Renode installed, version recorded (REQ-1).
-- **AC-2** — `pixhawk6x.repl` + `pixhawk6x-boot.resc` load the real
-  `DEPLOY_DIR_IMAGE` ELF and start emulation without Renode errors
+- **AC-1** — **Done.** Renode installed (1.16.1), version recorded
+  (REQ-1).
+- **AC-2** — **Done.** `pixhawk6x.repl` + a direct `renode -e` boot
+  (the `.resc`'s own content, run inline while iterating) load the
+  real `DEPLOY_DIR_IMAGE` ELF and start emulation without Renode
+  errors, reaching genuine PX4 application code on the console
   (REQ-2, REQ-3).
-- **AC-3** — `renode-test` run of the robot test passes: `nsh>` prompt
-  seen, `uorb status` and `ver all` both return successfully (REQ-4,
-  REQ-5). This also closes spec 001's deferred REQ-4/AC-2.
-- **AC-4** — Any real fidelity gaps hit are documented with the actual
-  fix applied, in §6 (REQ-6).
+- **AC-3** — **Not yet done.** `nsh>` prompt not yet reached — blocked
+  by gap #5 (§5.3/§6: task-delay/tick fidelity). `uorb status`/`ver
+  all` not yet exercised. Spec 001's deferred REQ-4/AC-2 remains open
+  for the same reason.
+- **AC-4** — **Done so far, ongoing.** Four real fidelity gaps found
+  and fixed are documented with their actual fixes in §5.3/§6 (REQ-6);
+  gap #5 is documented as the current open blocker, not yet fixed.
