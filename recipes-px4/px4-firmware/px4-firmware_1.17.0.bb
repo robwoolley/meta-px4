@@ -21,8 +21,17 @@ require px4-firmware.inc
 # the local copy via a WORKDIR-scoped git config (GIT_CONFIG_GLOBAL) in
 # do_compile:prepend -- NOT `git config --global`, which would write to the
 # real build user's ~/.gitconfig (HOME is not sandboxed for this task).
+#
+# Patch 0001 (SOURCE_DATE_EPOCH): confirmed via three independent clean
+# rebuilds (REQ-7) that the .elf is already byte-for-byte reproducible, but
+# the .px4 wrapper was not -- Tools/px_mkfw.py hardcodes
+# `build_time = int(time.time())` with no override. Patched it to honor
+# SOURCE_DATE_EPOCH (which OE already computes per recipe via
+# do_deploy_source_date_epoch and exports to all tasks), falling back to
+# time.time() unchanged when unset.
 SRC_URI = "gitsm://github.com/PX4/PX4-Autopilot.git;protocol=https;branch=release/1.17 \
            git://github.com/eProsima/Micro-CDR.git;protocol=https;nobranch=1;destsuffix=git/microcdr-mirror;name=microcdr \
+           file://0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch \
 "
 
 SRCREV = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"
