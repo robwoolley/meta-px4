@@ -1,0 +1,79 @@
+{
+    "description": "meta-px4 development environment, Yocto Project 6.0 'wrynose'",
+    "expires": "2030-05-31",
+    "sources": {
+        "bitbake": {
+            "git-remote": {
+                "uri": "https://git.openembedded.org/bitbake",
+                "branch": "2.18",
+                "rev": "2.18"
+            }
+        },
+        "openembedded-core": {
+            "git-remote": {
+                "uri": "https://git.openembedded.org/openembedded-core",
+                "branch": "wrynose",
+                "rev": "wrynose"
+            }
+        },
+        "meta-openembedded": {
+            "git-remote": {
+                "uri": "https://github.com/openembedded/meta-openembedded.git",
+                "branch": "wrynose",
+                "rev": "wrynose"
+            }
+        },
+        "meta-px4": {
+            "git-remote": {
+                "uri": "https://github.com/robwoolley/meta-px4",
+                "branch": "wrynose",
+                "rev": "wrynose"
+            }
+        }
+    },
+    "bitbake-setup": {
+        "configurations": [
+            {
+                "name": "sitl",
+                "description": "PX4 posix/SITL build (px4-autopilot_1.17.0.bb from github.com/robwoolley/meta-px4)",
+                "setup-dir-name": "oe-px4-sitl",
+                "bb-layers": [
+                    "openembedded-core/meta",
+                    "meta-openembedded/meta-oe",
+                    "meta-openembedded/meta-python",
+                    "meta-px4"
+                ],
+                "oe-fragments-one-of": {
+                    "machine": {
+                        "description": "Host machine for the SITL/companion-computer build",
+                        "options": [
+                            { "name": "machine/qemux86-64", "description": "x86-64 on QEMU (fastest SITL loop)" },
+                            { "name": "machine/genericx86-64", "description": "Generic x86_64 PCs and servers" },
+                            { "name": "machine/qemuarm64", "description": "ARMv8 on QEMU (companion-computer-like target)" }
+                        ]
+                    }
+                }
+            },
+            {
+                "name": "pixhawk6x",
+                "description": "STM32H7/NuttX firmware bring-up for the Holybro Pixhawk 6X FMU (specs/000, specs/001)",
+                "setup-dir-name": "oe-px4-pixhawk6x",
+                "bb-layers": [
+                    "openembedded-core/meta",
+                    "meta-px4"
+                ],
+                "oe-fragments-one-of": {
+                    "machine": {
+                        "description": "Target machine",
+                        "options": [
+                            { "name": "machine/pixhawk-6x", "description": "Holybro Pixhawk 6X FMU (STM32H753) -- the real machine, per specs/001-machine-pixhawk-6x.md" },
+                            { "name": "machine/qemuarm", "description": "Cortex-A9 on QEMU -- interim baremetal-toolchain smoke test" },
+                            { "name": "machine/qemuarm64", "description": "ARMv8 on QEMU -- interim baremetal-toolchain smoke test" }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    "version": "1.0"
+}
