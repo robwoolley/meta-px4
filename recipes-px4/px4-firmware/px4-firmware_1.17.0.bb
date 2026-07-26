@@ -40,3 +40,21 @@ do_compile:prepend() {
         url."file://${UNPACKDIR}/git/microcdr-mirror".insteadOf \
         "https://github.com/eProsima/Micro-CDR.git"
 }
+
+# PX4's own build has no "make install" target for firmware images -- the
+# .elf/.px4 just land in the out-of-tree cmake build dir (${B}, confirmed
+# at .../px4-firmware/1.17.0/build/px4_fmu-v6x_default.{elf,px4}). rm_work
+# deletes ${WORKDIR} (including ${B}) right after do_build, so without a
+# deploy task the finished firmware would vanish along with the rest of
+# the work directory. addtask ... before do_build runs this ahead of that
+# cleanup, same ordering kernel.bbclass uses for zImage.
+inherit deploy
+
+PX4_IMAGE_BASENAME = "px4-firmware-${PV}-${MACHINE}"
+
+do_deploy() {
+    install -d ${DEPLOYDIR}
+    install -m 0644 ${B}/px4_fmu-v6x_default.elf ${DEPLOYDIR}/${PX4_IMAGE_BASENAME}.elf
+    install -m 0644 ${B}/px4_fmu-v6x_default.px4 ${DEPLOYDIR}/${PX4_IMAGE_BASENAME}.px4
+}
+addtask deploy after do_compile before do_build

@@ -1,8 +1,8 @@
 # Spec 002 (M2): Offline PX4 NuttX firmware recipes
 
-- **Status:** In progress — `px4-firmware` builds successfully (§7);
-  `px4-io-firmware`/`px4-bootloader`/deploy-wiring/reproducibility
-  remain
+- **Status:** In progress — `px4-firmware` builds successfully and
+  deploys `.elf`/`.px4` to `DEPLOY_DIR_IMAGE` (§7);
+  `px4-io-firmware`/`px4-bootloader`/reproducibility remain
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (M1 must have
@@ -109,10 +109,12 @@ Checked directly in
   `.bin` that `px4-firmware`'s ROMFS generation consumes.
 - **REQ-5** — `px4-bootloader_1.17.0.bb` builds
   `px4_fmu-v6x_bootloader`.
-- **REQ-6** — Firmware recipes inherit `deploy` (or
-  `baremetal-image`, per spec 001 §4.1's M1 findings on which fits
-  better); outputs (`.elf`, `.bin`, `.px4`) land in
-  `DEPLOY_DIR_IMAGE`. Nothing installs into a rootfs.
+- **REQ-6** — **Done for `px4-firmware`.** Firmware recipes inherit
+  `deploy`; outputs (`.elf`, `.bin`, `.px4`) land in
+  `DEPLOY_DIR_IMAGE`. Nothing installs into a rootfs. (Plain `deploy`,
+  not `baremetal-image` — the latter wasn't needed once `do_deploy`
+  proved sufficient; still open for `px4-io-firmware`/`px4-bootloader`
+  once REQ-4/REQ-5 land.)
 - **REQ-7** — Two consecutive builds from clean `TMPDIR` (same inputs)
   produce byte-identical `.elf`/`.px4` artifacts.
 - **REQ-8** — `bitbake mc:pixhawk6x:px4-firmware` succeeds with
@@ -229,13 +231,19 @@ back to (b) only if it proves impractical.
   `BB_NO_NETWORK=1` explicitly set (the microcdr mirror redirect in
   §7 makes this the expected outcome, but "expected" isn't "verified"
   — do that pass before calling REQ-2 fully closed).
-- **AC-2** — **Partially done.** `px4_fmu-v6x_default.elf` and
-  `px4_fmu-v6x_default.px4` genuinely exist in `${B}` (not yet in
-  `DEPLOY_DIR_IMAGE` — REQ-6's `inherit deploy` wiring hasn't been
-  added yet, this is the next concrete step). Verified the ELF for
-  real with `arm-none-eabi-readelf -A`: `Tag_CPU_name: "7E-M"`,
-  `Tag_FP_arch: FPv5/FP-D16` — exactly the target chip's
-  architecture/FPU, not just "a build succeeded."
+- **AC-2** — **Done.** `px4-firmware_1.17.0.bb` now `inherit`s `deploy`
+  with a `do_deploy` task (`addtask deploy after do_compile before
+  do_build`) that installs
+  `px4-firmware-${PV}-${MACHINE}.{elf,px4}` into `DEPLOY_DIR_IMAGE`.
+  Verified for real, not just by reading the recipe: after enabling
+  `INHERIT += "rm_work"` (to reclaim disk space) and rebuilding from a
+  wiped `TMPDIR`, `tmp/deploy/images/pixhawk-6x/px4-firmware-1.17.0-pixhawk-6x.elf`
+  exists (47,702,264 bytes, matching the earlier build byte-for-byte
+  in size) while `tmp/work/.../px4-firmware/1.17.0/` was reduced to
+  just `temp/` by `rm_work` — proving the deploy task, not luck, is
+  what preserved the artifact. Re-ran `arm-none-eabi-readelf -A` on
+  the deployed copy: `Tag_CPU_name: "7E-M"`, `Tag_FP_arch: FPv5/FP-D16`
+  — still the correct target chip attributes.
 - **AC-3** — Two clean builds produce byte-identical artifacts
   (REQ-7) — not yet tested.
 - **AC-4** — **Done.** §2's CDRSTREAM question is answered with cited
@@ -289,4 +297,4 @@ static review):
 | px4io multiconfig vs. nested-build decision (§5.4) | _tbd — not yet started_ |
 | Byte-reproducibility confirmed | _tbd_ |
 | Toolchain gap vs. M1 findings (§5.3) | **None found** — `gcc-arm-none-eabi-native` (spec 001 §6) plus the unpatched kconfig force-override was sufficient; no additional toolchain work was needed beyond the three bugs above. |
-| REQ-6 deploy wiring | _tbd — `.elf`/`.px4` currently only exist in `${B}`, not `DEPLOY_DIR_IMAGE`; next concrete step_ |
+| REQ-6 deploy wiring | **Done** — `px4-firmware_1.17.0.bb` inherits `deploy`; `do_deploy` (ordered `after do_compile before do_build`) installs `px4-firmware-${PV}-${MACHINE}.{elf,px4}` into `DEPLOY_DIR_IMAGE`. Verified against a real `rm_work`-enabled rebuild: the deployed `.elf` survived (47,702,264 bytes, same target attributes via `readelf -A`) while `rm_work` reduced `${WORKDIR}` to just `temp/` — the deploy task is what preserved it, not incidental leftover state. |
