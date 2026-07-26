@@ -1,0 +1,40 @@
+From 1885227518459cac400a76e2f865401cabf283fa Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Sun, 26 Jul 2026 11:34:21 -0400
+Subject: [PATCH] boards/px4/fmu-v6x: disable USART3 DMA for Renode testing
+
+Renode's DMA.STM32DMA model for dma2 does not signal the transfer-
+complete condition NuttX's stm32_serial.c up_dma_send/up_dma_txavailable
+wait on, causing the console UART's DMA-based TX path to loop
+forever re-sending the same buffered output instead of completing.
+Disabling USART3 TXDMA/RXDMA forces plain interrupt-driven serial
+I/O for the console, sidestepping the incomplete DMA model entirely.
+
+This patch is carried only by px4-firmware-renode (a distinct,
+Renode-only build variant); the real hardware build (px4-firmware)
+is unaffected and keeps DMA-based console I/O.
+
+Upstream-Status: Inappropriate [board-specific, Renode-only testing variant]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ boards/px4/fmu-v6x/nuttx-config/nsh/defconfig | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig b/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig
+index a99d28ebaa..86b7f58af1 100644
+--- a/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig
++++ b/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig
+@@ -318,10 +318,10 @@ CONFIG_USART2_RXBUFSIZE=600
+ CONFIG_USART2_TXBUFSIZE=3000
+ CONFIG_USART3_BAUD=57600
+ CONFIG_USART3_RXBUFSIZE=180
+-CONFIG_USART3_RXDMA=y
++# CONFIG_USART3_RXDMA is not set
+ CONFIG_USART3_SERIAL_CONSOLE=y
+ CONFIG_USART3_TXBUFSIZE=1500
+-CONFIG_USART3_TXDMA=y
++# CONFIG_USART3_TXDMA is not set
+ CONFIG_USART6_BAUD=57600
+ CONFIG_USART6_RXBUFSIZE=600
+ CONFIG_USART6_TXBUFSIZE=1500
