@@ -155,26 +155,59 @@ specifically (kconfig toolchain guard, UXRCE system-libs support, idlc
 support, sitl deb packaging, dpkg replacement). The NuttX firmware
 recipes need their own patch review:
 
-- Patch `0001` (kconfig toolchain guard) most likely **is** needed
-  here too — it exists specifically because
-  `cmake/kconfig.cmake` force-overrides `CMAKE_TOOLCHAIN_FILE` from
-  `CONFIG_BOARD_TOOLCHAIN`, and fmu-v6x's `default.px4board` sets
-  exactly that (`CONFIG_BOARD_TOOLCHAIN="arm-none-eabi"`). Verify
-  during implementation rather than assume.
-- Patches `0002`/`0003` (UXRCE system libs, idlc) are directly
-  relevant per REQ-3/§2's CDRSTREAM question.
+- **Patch `0001` must be OMITTED for `px4-firmware` — the opposite of
+  the earlier guess in this spec, resolved by reading the actual
+  patch diff, not by assumption.** The patch changes
+  `if(TOOLCHAIN)` to `if(TOOLCHAIN AND NOT CMAKE_TOOLCHAIN_FILE)` so
+  an *externally-provided* `CMAKE_TOOLCHAIN_FILE` (e.g. bitbake's own,
+  injected unconditionally by `cmake.bbclass` for every cmake-based
+  recipe — confirmed from `classes-recipe/cmake.bbclass`) wins over
+  PX4's board-driven default. That's exactly what `px4-autopilot`
+  (posix) needs. `px4-firmware` needs the *opposite*: PX4's own
+  `Toolchain-arm-none-eabi.cmake` (driven by
+  `CONFIG_BOARD_TOOLCHAIN="arm-none-eabi"`) must win over bitbake's
+  own (Linux-targeting, wrong-triple) generated toolchain file. Since
+  `cmake.bbclass` always injects its own file, keeping the *unpatched*
+  `if(TOOLCHAIN) ... FORCE` behavior is what makes PX4 correctly
+  clobber it. `px4-firmware_1.17.0.bb`'s `SRC_URI` therefore omits
+  `0001-cmake-kconfig-...patch` entirely.
+- **Patches `0002`/`0003` (UXRCE system libs, idlc) are NOT carried
+  for `px4-firmware` — maintainer decision, not a technical dead
+  end.** Tracing the build chain surfaced a real complication:
+  `UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON` would mean `px4-firmware`
+  links this layer's `microcdr`/`microxrceddsclient` recipes as
+  prebuilt target libraries, but those are independent CMake projects
+  with no PX4-specific toolchain-forcing patch of their own — under
+  `MACHINE=pixhawk-6x` they'd get `cmake.bbclass`'s own
+  (Linux-targeting, wrong-triple) generated toolchain file instead of
+  `arm-none-eabi`, needing a vendored copy of PX4's
+  `Toolchain-arm-none-eabi.cmake` plus per-package bbappends to fix.
+  The maintainer confirmed it's acceptable for
+  `microcdr`/`microxrceddsclient` to be built as part of PX4's own
+  nested nested build instead (PX4's normal, unpatched
+  `ExternalProject_Add` path), avoiding that toolchain-composition
+  problem entirely for this milestone. This reintroduces the
+  network-fetch-during-compile question the posix build hit for the
+  same reason (spec 000 §4.3 fix #3) — resolve *that* with real build
+  evidence when/if it actually occurs, rather than pre-solving it
+  speculatively (`gitsm://`'s recursive submodule fetch may already
+  cover it; PX4-Autopilot's own submodule pin for
+  `src/modules/uxrce_dds_client/Micro-XRCE-DDS-Client` is fetched
+  offline regardless — only Micro-CDR's *own* nested
+  `ExternalProject_Add` inside that submodule is the open question).
 - Patches `0004`/`0005` (sitl deb packaging, dpkg replacement) are
-  posix-specific and almost certainly don't apply.
+  posix-specific and don't apply.
 
 ### 5.3 Toolchain
 
-Per spec 001 §4.1's plan of record (Option B first): package
-`arm-none-eabi-gcc` as a cross recipe, let PX4's own
-`Toolchain-arm-none-eabi.cmake` drive flags. M1 will have already
-validated this path against `baremetal-helloworld` — if M1's `wrynose`
-tune/`DEFAULTTUNE` findings (spec 001 §6) don't cleanly cover
-`cortex-m7`+`arm-none-eabi` cross-compilation (as opposed to the
-bare-metal image class), that gap surfaces here first.
+Per spec 001 §4.1's plan of record (Option B, now implemented — see
+spec 001 §6): `gcc-arm-none-eabi-native` provides prebuilt
+`arm-none-eabi-*` binaries on PATH; `px4-firmware` lets PX4's own
+`cmake/kconfig.cmake` force-select `Toolchain-arm-none-eabi.cmake`
+(§5.2) rather than fighting it. With `microcdr`/`microxrceddsclient`
+out of scope per the revised §5.2, this recipe doesn't need to solve
+toolchain composition for any dependency outside PX4's own tree for
+this milestone.
 
 ### 5.4 px4io as a multiconfig dependency
 
