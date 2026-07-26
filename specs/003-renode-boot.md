@@ -210,13 +210,50 @@ this Renode configuration, which turns what would be a normal,
 bounded "give up after ~300ms and move on" retry into an effective
 infinite tight loop that never reaches NSH. This is the same class of
 risk spec 000 R2 flagged for M4's SIH timing, but it turns out to
-already block M3's plain boot too — not confirmed root-caused yet
-(candidates: `SysTick`/NVIC tick modeling, or a different
-tickless/hardware-timer path NuttX uses that isn't obvious from
-`nsh/defconfig` alone — `CONFIG_SCHED_TICKLESS` is *not* set, so it
-should be plain SysTick-driven, which makes the finding more
-surprising and worth further investigation rather than working around
-blindly).
+already block M3's plain boot too.
+
+**Follow-up investigation, several hypotheses tested and ruled out
+with real evidence (not yet root-caused):**
+
+- Verified directly in the real, built NuttX `.config`:
+  `CONFIG_SCHED_TICKLESS is not set` — plain 1kHz `SysTick`-driven
+  scheduling, `CONFIG_USEC_PER_TICK=1000`. Not a tickless-mode
+  question.
+- Verified `px4_usleep` maps to plain `system_usleep` (standard NuttX
+  `usleep()`) for this hardware target — the
+  `ENABLE_LOCKSTEP_SCHEDULER` path (SITL-only) is not compiled in, so
+  this isn't a lockstep-simulation-specific code path.
+- **Hypothesis: `SysTick` clock-rate mismatch.** The real, built
+  `board.h` resolves `STM32_CPUCLK_FREQUENCY` = `STM32_PLL1P_FREQUENCY`
+  = 480MHz (HSE 16MHz × PLL1N(60) / PLL1P(2)), while the base
+  `stm32h743.repl` sets `nvic: systickFrequency: 96_000_000` — a real,
+  concrete 5x mismatch against what `stm32_timerisr.c`'s
+  `SYSTICK_RELOAD = (STM32_CPUCLK_FREQUENCY / CLK_TCK) - 1` assumes.
+  **Tested and ruled out**: overriding `systickFrequency` to
+  `480000000` in the board `.repl` produced **zero change** in the
+  observed timing pattern (identical ~3.78µs-per-iteration behavior).
+- **Confirmed via `cpu LogFunctionNames true`**: the `SysTick`
+  interrupt handler (`stm32_timerisr`) genuinely *does* fire during
+  boot — not simply absent/undelivered.
+- **Confirmed via a clean (untraced) run**: `host`/`virt` time track
+  each other almost exactly 1:1 up until the MTD retry loop begins
+  (`host: 5.01s | virt: 4.97s`), then `virt` time essentially stalls
+  while `host` time keeps advancing normally (`host: 9.06s | virt:
+  5.11s` four seconds of host time later). This rules out a simple
+  "sleep returns proportionally too fast" scaling bug — instead, the
+  calling task appears to be rescheduled and resumed almost
+  immediately without ever genuinely blocking for the requested
+  duration, each time through the retry.
+
+**Where this stands**: the `SysTick` timer interrupt fires correctly,
+but whatever wait NuttX's `usleep()` → `clock_nanosleep()` chain uses
+to actually suspend the calling task until enough ticks have elapsed
+does not appear to be blocking it at all in this configuration. Root
+cause not yet found — the next step would be tracing
+`clock_nanosleep`/the watchdog-based wait/wake mechanism itself
+(deeper NuttX scheduler internals), or interactive debugging (e.g.
+GDB attached to Renode), rather than further `.repl`-level
+register-stub guesses.
 
 ## 6. Implementation record
 
