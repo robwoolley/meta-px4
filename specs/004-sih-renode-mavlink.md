@@ -13,8 +13,14 @@
   fidelity gap (`Timers.STM32_Timer`, fmu-v6x's `HRT_TIMER`=TIM8), not
   an arming-check or SIH-specific bug, and is unresolved: fixing it
   for real likely means either patching Renode's own timer model or
-  finding a better-modeled timer peripheral to repoint HRT at, neither
-  attempted yet. REQ-3 through REQ-6 not yet started.
+  finding a better-modeled timer peripheral to repoint HRT at —
+  deliberately not attempted (explicit user decision: deprioritized in
+  favor of REQ-3, since the timer gap only blocks arming/flight, not
+  MAVLink reachability). REQ-3 done: a real `pymavlink` client
+  observed a genuine heartbeat over a UART-bridged socket (§6). REQ-4
+  done as a side effect (host prerequisite, no `mavlink-router`
+  needed). REQ-5/REQ-6 blocked on the timer gap above; REQ-6's answer
+  turned out to already be found (§6).
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md) (G4, R2),
   [003-renode-boot.md](003-renode-boot.md) (Done: PX4 boots to a live
@@ -85,23 +91,31 @@ and assigns the research risk to this milestone, not M3.
 
 ## 3. Requirements
 
-- **REQ-1** — **Done.** A SIH-enabled firmware variant exists
+- **REQ-1** — **Builds and boots; the "genuinely running" claim was
+  wrong, corrected in §6.** A SIH-enabled firmware variant exists
   (`CONFIG_MODULES_SIMULATION_SIMULATOR_SIH=y` plus its Kconfig
   dependencies), extending `px4-firmware-renode` per §5.1's simpler
-  path. Verified genuinely running with correct physics and correctly-
-  flagged simulated sensor data (§6), not just "compiles."
+  path, and publishes one valid, correctly-flagged simulated sample at
+  startup. But it is **not** continuously running: re-querying the
+  same topic later proved PX4's work-queue scheduling (which SIH runs
+  on) never advances past its first tick under Renode (§6) — a real,
+  severe, unresolved Renode timer-model gap, not something this layer
+  has fixed.
 - **REQ-2** — **Done.** `SYS_AUTOSTART` selects the existing
   `1100_rc_quad_x_sih` airframe (simplest vehicle type) rather than
   authoring a new one — confirmed via real boot log
   (`Loading airframe: /etc/init.d/airframes/1100_rc_quad_x_sih.hil`).
-- **REQ-3** — MAVLink is verified reachable from the *host* (not just
-  visible in Renode's own console log) via a real socket-level check
-  — actually connect and observe a MAVLink heartbeat, not infer
-  reachability from boot-log text alone. Resolve the Ethernet-vs-UART
-  question (§2) with evidence: attempt Ethernet first since it avoids
-  new UART/socket plumbing, fall back to bridging the UART MAVLink
-  instance (`/dev/ttyS6`) via Renode's UART-to-socket mechanism if
-  Ethernet proves impractical.
+- **REQ-3** — **Done.** MAVLink is verified reachable from the *host*
+  via a real socket-level check, not inferred from boot-log text.
+  Resolved Ethernet-vs-UART (§2) with evidence: Ethernet was assessed
+  impractical (§6 — Renode's `emulation CreateTap` needs a host TAP
+  interface, which needs `CAP_NET_ADMIN`/root to bring up, a
+  system-networking change out of scope to make without explicit
+  sign-off), so bridged the UART MAVLink instance (`/dev/ttyS6`,
+  UART7/TELEM1) via the same `CreateServerSocketTerminal` mechanism
+  already proven for the console (`SIMULATION.md`). A real `pymavlink`
+  client connected over TCP and received a correctly-parsed heartbeat
+  (§6) — genuine socket-level reachability, not text-log inference.
 - **REQ-4** — Host-side MAVLink tooling (`mavlink-router` and/or
   MAVSDK) is real, runnable tooling — either an OE recipe (companion-
   side packaging, per spec 000 §4.4's note that posix-side packaging
@@ -319,26 +333,60 @@ producing output and responding to typed commands well past the
 response followed by a fresh `nsh>` prompt, where the unpatched build
 would have hung forever.
 
+**REQ-3 done: MAVLink verified reachable from the host over a real
+socket, resolving Ethernet vs. UART with evidence.** Checked whether
+Renode's Ethernet path (`emulation CreateTap`/`CreateSwitch`, bridging
+the base repl's modeled `SynopsysDWCEthernetQualityOfService` MAC to a
+host-reachable interface) was practical: `CreateTap` requires a host
+TAP network interface, and while `/dev/net/tun` itself is
+world-writable on this host (so the raw fd can be opened
+unprivileged), actually bringing the resulting interface up and
+assigning it an address still needs `CAP_NET_ADMIN` — a host-level
+networking change out of scope to make without explicit sign-off, so
+Ethernet was assessed impractical rather than attempted. Fell back to
+the documented alternative (spec 000 §4.6): bridged the UART MAVLink
+instance instead, using the exact same `emulation
+CreateServerSocketTerminal`/`connector Connect` mechanism already
+proven for the console in `SIMULATION.md` — `connector Connect
+sysbus.uart7 telem1` — with zero new host privileges needed, since
+it's the same mechanism already working.
+
+Verified with a real MAVLink client, not a raw byte/text check: installed
+`pymavlink` into the existing `renode-test-venv` and connected via
+`mavutil.mavlink_connection('tcp:127.0.0.1:<port>')`. Received a
+correctly-parsed heartbeat within 0.1 real seconds of connecting:
+`HEARTBEAT {type: 2 (MAV_TYPE_QUADROTOR), autopilot: 12
+(MAV_AUTOPILOT_PX4), base_mode: 61, system_status: 0, mavlink_version:
+3}`, system ID 1 — genuine protocol-level reachability, not inferred
+from the boot log's `Starting MAVLink on /dev/ttyS6` text.
+
+This also answers REQ-4's open question: a plain `pymavlink` client
+was sufficient with no `mavlink-router` intermediate hop needed,
+confirming the REQ-4 hypothesis that MAVSDK-family tooling can speak
+MAVLink directly.
+
 | Item | Decision / evidence |
 |---|---|
 | SIH variant: extends `px4-firmware-renode` or new recipe? | **Extends it** — confirmed workable, one additional patch, no need for a separate recipe. |
 | UART7 (TELEM1) DMA hang | **Real gap found and fixed** — see above. Same Renode DMA2 model bug as spec 003's console hang, recurring on a second DMA2-routed UART; fixed the same way (patch 0004 disables `CONFIG_UART7_RXDMA`/`TXDMA`). |
-| MAVLink bridge transport: Ethernet or UART? | _tbd — not yet attempted_ |
-| Host MAVLink tooling: OE recipe or host prerequisite? | _tbd — not yet attempted_ |
+| MAVLink bridge transport: Ethernet or UART? | **UART** — Ethernet needs host `CAP_NET_ADMIN` for `CreateTap` (assessed impractical, not attempted); the UART bridge needed zero new host privileges since it reuses the console's already-proven socket mechanism. Verified with a real `pymavlink` heartbeat. |
+| Host MAVLink tooling: OE recipe or host prerequisite? | **Host prerequisite, not an OE recipe** — plain `pip install pymavlink` into a venv was sufficient; no `mavlink-router` intermediate needed. |
 | Timer/virtual-time fidelity under SIH | **Real, severe gap found (REQ-6's answer, found early).** Not "drift" — PX4's work-queue scheduling (SIH included) never advances past its first tick under Renode at all. See "Corrected finding" above. |
 | FLASH budget for the SIH variant | **Real constraint hit and fixed** — see above. Removing real-hardware drivers redundant with SIH's simulated backends was necessary, not optional. |
 | Arming blocked by a real, unresolved sensor-validity discrepancy | **Yes, root-caused** — not an arming-check bug: `sensor_accel` genuinely stops updating after one publish because the work-queue thread that would republish it never runs again (see "Corrected finding" above). This is the current blocker for REQ-5 (scripted arm→takeoff→land), and it's a Renode timer-model gap, not something fixable purely in PX4/NuttX config. |
 
 ## 7. Acceptance criteria
 
-- **AC-1** — SIH-enabled firmware builds and boots in Renode to the
-  point of accepting `commander` mode-switch/arm commands (REQ-1,
-  REQ-2).
-- **AC-2** — A real, host-side socket connection observes a MAVLink
-  heartbeat from the Renode instance (REQ-3, REQ-4).
-- **AC-3** — Scripted MAVSDK arm→takeoff→land completes successfully
-  against the Renode SIH instance, runnable headlessly with a
-  pass/fail exit code (REQ-5).
-- **AC-4** — Real timer/virtual-time fidelity findings for SIH are
-  documented in §6, whether or not a problem was actually found
-  (REQ-6).
+- **AC-1** — **Not met.** SIH-enabled firmware builds and boots in
+  Renode (REQ-1, REQ-2), but does not stay in a state that would
+  accept `commander` mode-switch/arm commands: the work-queue timer
+  gap (§6) means sensor data goes stale and `commander check` never
+  passes.
+- **AC-2** — **Done.** A real, host-side socket connection observes a
+  MAVLink heartbeat from the Renode instance (REQ-3, REQ-4) — see §6.
+- **AC-3** — **Not met, blocked by AC-1.** Scripted MAVSDK
+  arm→takeoff→land completes successfully against the Renode SIH
+  instance, runnable headlessly with a pass/fail exit code (REQ-5).
+- **AC-4** — **Done.** Real timer/virtual-time fidelity findings for
+  SIH are documented in §6: a severe, unresolved Renode work-queue/HRT
+  timer gap, not the milder "drift" originally anticipated (REQ-6).
