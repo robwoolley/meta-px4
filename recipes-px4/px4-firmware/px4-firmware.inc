@@ -12,7 +12,11 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=70b583e99896377e3306b74b7f33e5de"
 # so the idlc bootstrap is moot, and UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS is
 # deliberately not set (specs/002 section 5.2) -- PX4 builds
 # microcdr/microxrceddsclient itself via its own nested build for this
-# milestone.
+# milestone. python3-pkg-resources-native is an extra needed here that
+# px4-autopilot's DEPENDS list doesn't have: PX4's libuavcan DSDL
+# compiler still imports pkg_resources directly, which oe-core's
+# python3-setuptools-native (82.0.1) no longer bundles -- see that
+# recipe's own comment for the full story.
 DEPENDS += "\
     gcc-arm-none-eabi-native \
     nunavut-native \
@@ -25,6 +29,7 @@ DEPENDS += "\
     python3-future-native \
     python3-jinja2-native \
     python3-jsonschema-native \
+    python3-pkg-resources-native \
     python3-kconfiglib-native \
     python3-lark-parser-native \
     python3-lxml-native \
