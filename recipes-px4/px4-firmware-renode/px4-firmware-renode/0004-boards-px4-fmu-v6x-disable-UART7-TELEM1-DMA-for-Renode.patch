@@ -1,0 +1,48 @@
+From 6dd73828f450b938d21fae1c378487f5c26546ad Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Sun, 26 Jul 2026 15:52:27 -0400
+Subject: [PATCH] boards/px4/fmu-v6x: disable UART7 (TELEM1) DMA for Renode
+ testing
+
+/dev/ttyS6 (where MAVLink starts a second instance at boot,
+'Starting MAVLink on /dev/ttyS6') is UART7 -- PX4's TELEM1 port, a
+physically distinct peripheral from the USART3 console already fixed
+in the prior commit. fmu-v6x's own board_dma_map.h routes UART7's
+RX/TX DMA onto DMA2 (DMAMAP_DMA12_UART7RX_1/_TX_1, the DMAMUX2/DMA2
+group, alongside USART3's own DMA2 mapping) -- the exact same DMA2
+controller instance Renode's DMA.STM32DMA model never signals
+transfer-complete on. Once MAVLink actually transmits on this port,
+it hits the identical infinite-retransmit hang already root-caused
+for the console, freezing the whole system (including the NSH
+console, since the hang starves task scheduling).
+
+Disabling UART7 TXDMA/RXDMA forces plain interrupt-driven I/O for
+this port too, sidestepping the same incomplete DMA model. Carried
+only by px4-firmware-renode -- the real hardware build is unaffected.
+
+Upstream-Status: Inappropriate [board-specific, Renode-only testing variant]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ boards/px4/fmu-v6x/nuttx-config/nsh/defconfig | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig b/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig
+index 86b7f58af1..ac5883e696 100644
+--- a/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig
++++ b/boards/px4/fmu-v6x/nuttx-config/nsh/defconfig
+@@ -302,9 +302,9 @@ CONFIG_UART7_BAUD=57600
+ CONFIG_UART7_IFLOWCONTROL=y
+ CONFIG_UART7_OFLOWCONTROL=y
+ CONFIG_UART7_RXBUFSIZE=600
+-CONFIG_UART7_RXDMA=y
++# CONFIG_UART7_RXDMA is not set
+ CONFIG_UART7_TXBUFSIZE=3000
+-CONFIG_UART7_TXDMA=y
++# CONFIG_UART7_TXDMA is not set
+ CONFIG_UART8_BAUD=57600
+ CONFIG_UART8_RXBUFSIZE=600
+ CONFIG_UART8_TXBUFSIZE=1500
+-- 
+2.39.5
+
