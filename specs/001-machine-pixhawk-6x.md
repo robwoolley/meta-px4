@@ -76,9 +76,28 @@ SERIAL_CONSOLES = "57600;ttyS0"    # placeholder — Renode UART mapping
 
 Open items to resolve during implementation (record answers in §6):
 
-- Exact oe-core tune include and `DEFAULTTUNE` name providing
-  `armv7em` + `fpv5-d16` hard-float on `wrynose` (this layer's target
-  Yocto Project LTS release).
+- ~~Exact oe-core tune include and `DEFAULTTUNE` name providing
+  `armv7em` + `fpv5-d16` hard-float on `wrynose`~~ — **resolved: no
+  such tune exists in oe-core.** `conf/machine/include/arm/armv7m/
+  tune-cortexm7.inc` defines only the plain `cortexm7` tune (no FPU
+  variant at all). `fpv5-d16` (double-precision) has zero definition
+  anywhere in oe-core's tune files — `feature-arm-neon.inc` only
+  defines the single-precision `vfpv5spd16` (`-mfpu=fpv5-sp-d16`),
+  and it's wired only into the ARMv8-M chain
+  (`arch-armv8m-main.inc`), which `tune-cortexm7.inc`/
+  `arch-armv7em.inc` don't include. **A layer-local tune addition is
+  required** (REQ-1's documented fallback condition is met). Confirmed
+  separately, from real NuttX source rather than assumption, that PX4
+  genuinely needs `fpv5-d16`: `platforms/nuttx/NuttX/nuttx/arch/arm/
+  src/armv7-m/Toolchain.defs` sets `-mfpu=fpv5-d16` when
+  `CONFIG_ARCH_CORTEXM7=y` and `CONFIG_ARCH_DPFPU=y`, and
+  `arch/arm/src/stm32h7/Kconfig` `select`s `ARCH_HAVE_DPFPU` for the
+  STM32H7 chip variants fmu-v6x uses. Implementation should add a new
+  `TUNE_FEATURES` value (e.g. `fpv5d16`) to a layer-local
+  `armv7m/tune-cortexm7.inc` override or a machine-local include,
+  following `feature-arm-neon.inc`'s `vfpv5spd16` entry as the
+  pattern but with `-mfpu=fpv5-d16` and the hard-float calling
+  convention.
 - `TCLIBC`: `"newlib"` vs `"baremetal"` for the helloworld gate. This
   choice is *for M1 only*; PX4/NuttX's libc story is settled in M2
   (NuttX provides its own libc — the toolchain runtime mainly
@@ -164,8 +183,8 @@ does **not** yet validate REQ-1 (no `pixhawk-6x` MACHINE or
 
 | Item | Decision / evidence |
 |---|---|
-| oe-core tune include + DEFAULTTUNE | _tbd — qemuarm's default (`cortexa15t2hf-neon-oe-eabi`) confirmed working for the baremetal-image class in general; the actual `fpv5-d16` Cortex-M7 tune is still unresearched_ |
-| fpv5-d16 availability on wrynose | _tbd_ |
+| oe-core tune include + DEFAULTTUNE | qemuarm's default (`cortexa15t2hf-neon-oe-eabi`) confirmed working for the baremetal-image class in general. For the real target: **no existing oe-core tune covers Cortex-M7 + fpv5-d16** — `tune-cortexm7.inc` provides only the plain `cortexm7` tune. A layer-local tune addition is required (see §4.1 open items). |
+| fpv5-d16 availability on wrynose | **Not available anywhere in oe-core's tune files** on `wrynose` (checked `feature-arm-neon.inc`, `arch-armv7em.inc`, `arch-armv8m-main.inc`) — only single-precision `fpv5-sp-d16` exists, wired only into ARMv8-M. Confirmed via real NuttX source that PX4 needs the double-precision `fpv5-d16` for fmu-v6x/STM32H7. Layer-local addition required — see §4.1. |
 | TCLIBC for M1 | **`"baremetal"` confirmed working** for oe-core's `baremetal-helloworld` on `wrynose` (see interim validation above) |
 | Renode version tested | _tbd — not yet attempted; interim validation used `qemu-system-arm` directly instead_ |
 | Toolchain ADR outcome (000 §4.1) | _tbd_ |
