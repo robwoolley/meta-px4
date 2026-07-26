@@ -1,12 +1,11 @@
 # Spec 002 (M2): Offline PX4 NuttX firmware recipes
 
-- **Status:** All of REQ-1 through REQ-8 done and verified with real
-  builds. `px4-firmware`, `px4-bootloader`, and `px4-io-firmware` all
-  build and deploy `.elf`/`.px4` (bootloader also `.bin`) to
-  `DEPLOY_DIR_IMAGE`, build fully offline under `BB_NO_NETWORK=1`, and
-  produce byte-identical artifacts across independent clean rebuilds
-  (§7). AC-6 (verifying px4-autopilot/baremetal-helloworld are
-  unaffected) is the only item not yet re-checked.
+- **Status: Done.** All of REQ-1 through REQ-8 and AC-1 through AC-6
+  verified with real builds. `px4-firmware`, `px4-bootloader`, and
+  `px4-io-firmware` all build and deploy `.elf`/`.px4` (bootloader
+  also `.bin`) to `DEPLOY_DIR_IMAGE`, build fully offline under
+  `BB_NO_NETWORK=1`, and produce byte-identical artifacts across
+  independent clean rebuilds (§7). M3 (Renode boot) is next.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (M1 must have
@@ -323,11 +322,18 @@ All three recipes now produce the identical `SOURCE_DATE_EPOCH`
   `px4-bootloader`'s `.elf` shows the same Cortex-M7/FPv5-D16
   attributes as `px4-firmware`'s. Both also carry patch 0001
   (`SOURCE_DATE_EPOCH`) for `.px4` reproducibility parity.
-- **AC-6** — Existing `px4-autopilot` (posix) and M1's
-  `baremetal-helloworld` builds are provably unaffected by the new
-  recipes/layers — not re-verified since `px4-firmware` landed
-  (plausible given they're separate recipes/machines, but "plausible"
-  isn't "checked").
+- **AC-6** — **Done.** `bitbake px4-autopilot` (posix) succeeds
+  unaffected by all of this milestone's new recipes/machines/
+  multiconfigs: 2947/2947 tasks, zero errors. `bitbake
+  mc:pixhawk6x:baremetal-helloworld` fails with "Nothing PROVIDES
+  'baremetal-helloworld' ... incompatible with machine pixhawk-6x" —
+  this is the **pre-existing, already-documented** limitation from
+  spec 001 REQ-3's revision (oe-core's `baremetal-helloworld` only
+  maps addresses for QEMU `COMPATIBLE_MACHINE` targets, which is
+  exactly why M2's `px4-firmware` exists as the real bare-metal
+  validation path), not a regression from any of this session's new
+  work — none of it touches `baremetal-helloworld` or its
+  `COMPATIBLE_MACHINE` list.
 
 ## 7. Implementation record (fill during/after implementation)
 
