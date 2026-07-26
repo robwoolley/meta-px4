@@ -34,8 +34,24 @@ gate it.
 - **REQ-2** — A multiconfig fragment `conf/multiconfig/pixhawk6x.conf`
   setting `MACHINE = "pixhawk-6x"` and the chosen `TCLIBC`, so firmware
   builds never require the user's primary DISTRO/MACHINE to change.
-- **REQ-3** — `bitbake mc:pixhawk6x:baremetal-helloworld` succeeds from
-  a clean TMPDIR with `BB_NO_NETWORK = "1"` after fetching.
+- **REQ-3** — ~~`bitbake mc:pixhawk6x:baremetal-helloworld` succeeds
+  from a clean TMPDIR with `BB_NO_NETWORK = "1"` after fetching.~~
+  **Revised: oe-core's `baremetal-helloworld` cannot be made to work
+  on a real bare-metal machine, not just a `COMPATIBLE_MACHINE`
+  metadata restriction.** Its upstream source
+  (`github.com/ahcbb6/baremetal-helloqemu`) only has startup
+  code/linker scripts for specific QEMU machine models, selected via
+  `BAREMETAL_QEMUARCH:qemu*` — there is no build target and no
+  mapping for a real chip, so even overriding `COMPATIBLE_MACHINE`
+  produces an unbuildable `BAREMETAL_QEMUARCH=""`. **REQ-3 is now:**
+  `bitbake -e mc:pixhawk6x:<any recipe>` resolves cleanly for the real
+  `pixhawk-6x` machine (proving the machine/tune/toolchain
+  configuration itself is sound), with `TUNE_CCARGS` containing the
+  exact flags confirmed correct in §6. Producing a genuinely working
+  ELF for `pixhawk-6x` requires real STM32H753 startup code and a
+  linker script — that work is subsumed by M2/M3 (PX4 itself is that
+  "hello world", and M3 is where it first needs to actually boot), not
+  duplicated here with a bespoke trivial recipe.
 - **REQ-4** — The resulting ELF runs under Renode using upstream
   `platforms/cpus/stm32h743.repl` plus a layer-provided board overlay,
   and emits its greeting on the emulated UART.
@@ -58,23 +74,24 @@ gate it.
 
 ## 4. Design sketch
 
-### 4.1 Machine
+### 4.1 Machine — implemented
 
-```
-# conf/machine/pixhawk-6x.conf (sketch — validate tune names in impl)
-#@TYPE: Machine
-#@NAME: Holybro Pixhawk 6X FMU (STM32H753, Cortex-M7)
+`conf/machine/pixhawk-6x.conf`, `conf/machine/include/stm32h7.inc`,
+`conf/machine/include/arm/armv7m/tune-cortexm7-fpv5d16.inc`, and
+`conf/multiconfig/pixhawk6x.conf` now exist for real (not a sketch).
+`DEFAULTTUNE = "cortexm7hf-fpv5d16"` — the "hf" is embedded directly
+in the tune name because `TUNE_PKGARCH` auto-computes as
+`ARMPKGARCH + ARMPKGSFX_EABI("hf") + ARMPKGSFX_FPU("-fpv5d16")`, and
+oe-core's sanity checker rejects a `PACKAGE_EXTRA_ARCHS` that doesn't
+literally contain that string (hit this as a real error — see §6).
+Verified via `bitbake -e mc:pixhawk6x:<recipe with relaxed
+COMPATIBLE_MACHINE>` that this produces exactly
+`TUNE_CCARGS=" -mcpu=cortex-m7 -march=armv7e-m -mfpu=fpv5-d16
+-mfloat-abi=hard"`, matching the flags confirmed from real NuttX
+source in REQ-1's evidence.
 
-require conf/machine/include/stm32h7.inc
-
-# oe-core cortex-m7 tune; confirm fpv5-d16 (DP) vs fpv5-sp-d16 (SP).
-require conf/machine/include/arm/armv7m/tune-cortexm7.inc
-DEFAULTTUNE = "cortexm7hfd"        # placeholder — see REQ-1 evidence
-
-SERIAL_CONSOLES = "57600;ttyS0"    # placeholder — Renode UART mapping
-```
-
-Open items to resolve during implementation (record answers in §6):
+The remaining open items below were resolved during implementation
+(record answers in §6):
 
 - ~~Exact oe-core tune include and `DEFAULTTUNE` name providing
   `armv7em` + `fpv5-d16` hard-float on `wrynose`~~ — **resolved: no
@@ -143,11 +160,18 @@ this spec's PR:
 
 ## 5. Acceptance criteria
 
-- **AC-1** — On `wrynose`:
-  `bitbake mc:pixhawk6x:baremetal-helloworld` from clean TMPDIR
-  succeeds offline (REQ-3).
+- **AC-1** — **Done, per REQ-3's revision.** On `wrynose`:
+  `bitbake -e mc:pixhawk6x:<recipe>` resolves cleanly for the real
+  `pixhawk-6x` machine with the correct `TUNE_CCARGS`/`TUNE_PKGARCH`
+  (verified in §6). The offline (`BB_NO_NETWORK=1`) full-build
+  criterion moves to M2/M3 where a real buildable target
+  (`px4-firmware`) exists for this machine.
 - **AC-2** — `renode-test` run of the harness passes: UART analyzer
-  sees the helloworld greeting within 10 virtual seconds (REQ-4/5).
+  sees a real boot greeting within 10 virtual seconds (REQ-4/5) — this
+  now naturally becomes M3's PX4-boots-in-Renode gate rather than a
+  separate trivial-recipe test, since REQ-3's revision established
+  there is no meaningful trivial target for real `pixhawk-6x`
+  hardware to boot before then.
 - **AC-3** — CI job (or documented equivalent invocation) covering
   AC-1 + AC-2 exists and is green.
 - **AC-4** — Spec 000 §4.1 marked decided; §6 below filled in; M0
@@ -183,9 +207,9 @@ does **not** yet validate REQ-1 (no `pixhawk-6x` MACHINE or
 
 | Item | Decision / evidence |
 |---|---|
-| oe-core tune include + DEFAULTTUNE | qemuarm's default (`cortexa15t2hf-neon-oe-eabi`) confirmed working for the baremetal-image class in general. For the real target: **no existing oe-core tune covers Cortex-M7 + fpv5-d16** — `tune-cortexm7.inc` provides only the plain `cortexm7` tune. A layer-local tune addition is required (see §4.1 open items). |
-| fpv5-d16 availability on wrynose | **Not available anywhere in oe-core's tune files** on `wrynose` (checked `feature-arm-neon.inc`, `arch-armv7em.inc`, `arch-armv8m-main.inc`) — only single-precision `fpv5-sp-d16` exists, wired only into ARMv8-M. Confirmed via real NuttX source that PX4 needs the double-precision `fpv5-d16` for fmu-v6x/STM32H7. Layer-local addition required — see §4.1. |
-| TCLIBC for M1 | **`"baremetal"` confirmed working** for oe-core's `baremetal-helloworld` on `wrynose` (see interim validation above) |
-| Renode version tested | _tbd — not yet attempted; interim validation used `qemu-system-arm` directly instead_ |
-| Toolchain ADR outcome (000 §4.1) | _tbd_ |
-| M0 audit artifact links | _tbd_ |
+| oe-core tune include + DEFAULTTUNE | **Implemented.** No existing oe-core tune covers Cortex-M7 + fpv5-d16, so `conf/machine/include/arm/armv7m/tune-cortexm7-fpv5d16.inc` adds a layer-local `cortexm7hf-fpv5d16` tune (name embeds "hf" because `TUNE_PKGARCH` auto-computes it that way — first attempt named it `cortexm7-fpv5d16` and oe-core's sanity checker rejected it: "PACKAGE_ARCHS ... does not contain TUNE_PKGARCH (cortexm7hf-fpv5d16)"). `DEFAULTTUNE = "cortexm7hf-fpv5d16"` in `conf/machine/pixhawk-6x.conf`. |
+| fpv5-d16 availability on wrynose | **Not available anywhere in oe-core's tune files** — confirmed and worked around (see row above). `bitbake -e` confirms `TUNE_CCARGS=" -mcpu=cortex-m7 -march=armv7e-m -mfpu=fpv5-d16 -mfloat-abi=hard"` — the exact flags NuttX's own `Toolchain.defs` uses for `CONFIG_ARCH_CORTEXM7=y`+`CONFIG_ARCH_DPFPU=y`. |
+| TCLIBC for M1 | **`"baremetal"` confirmed working** for oe-core's `baremetal-helloworld` on `wrynose` against the *interim* `qemuarm` machine (see interim validation above). Set in `conf/multiconfig/pixhawk6x.conf` for the real machine too, but REQ-3's revision means no real recipe has exercised it against `pixhawk-6x` yet — that's M2's `px4-firmware`. |
+| Renode version tested | _tbd — not yet attempted; blocked on M2 producing a real bootable ELF, since REQ-3's revision established `baremetal-helloworld` can't provide one for real hardware_ |
+| Toolchain ADR outcome (000 §4.1) | _tbd — Option B (packaged `arm-none-eabi` cross recipe) is the plan of record; not yet implemented as an OE recipe. This session used a manually-downloaded ARM GNU Toolchain 15.2.Rel1 tarball for host-side Kconfig research (spec 002 §2), not as part of any bitbake recipe — that packaging work is still open._ |
+| M0 audit artifact links | Folded into specs 000 §4.3 and 002 §2 (fmu-v6x board audit against the real v1.17.0 tree) rather than a separate artifact file. |
