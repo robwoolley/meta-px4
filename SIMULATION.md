@@ -150,11 +150,18 @@ start
 Then, in a **separate** terminal:
 
 ```sh
-telnet localhost 3456
+nc localhost 3456
 ```
 
-That telnet session is the actual NSH console — type commands into it
-once you see `nsh>`.
+That `nc` session is the actual NSH console — type commands into it
+once you see `nsh>`. Use `nc`, not `telnet`: `CreateServerSocketTerminal`
+is a plain raw TCP pass-through, not a real telnet server, but a
+`telnet` client still sends its own protocol negotiation bytes and
+translates Enter into `CR LF`/`CR NUL` on connect — Renode forwards all
+of that straight to the UART as literal bytes, which NSH's input
+parser doesn't understand, so keystrokes appear to do nothing even
+though the connection and output are fine. `nc` does no negotiation or
+translation at all, so it just works.
 
 `pixhawk6x-boot.resc` also runs `showAnalyzer usart3`, which pops up a
 GUI window mirroring the same UART output. That window is only useful
