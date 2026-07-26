@@ -166,14 +166,12 @@ this spec's PR:
   (verified in §6). The offline (`BB_NO_NETWORK=1`) full-build
   criterion moves to M2/M3 where a real buildable target
   (`px4-firmware`) exists for this machine.
-- **AC-2** — `renode-test` run of the harness passes: UART analyzer
-  sees a real boot greeting within 10 virtual seconds (REQ-4/5) — this
-  now naturally becomes M3's PX4-boots-in-Renode gate rather than a
-  separate trivial-recipe test, since REQ-3's revision established
-  there is no meaningful trivial target for real `pixhawk-6x`
-  hardware to boot before then. **Deferred to and tracked by
-  [spec 003](003-renode-boot.md) AC-3**, now that M2 has produced a
-  real bootable ELF.
+- **AC-2** — **Done, via [spec 003](003-renode-boot.md) AC-3.**
+  `renode-test` run of the harness passes: `nsh>` reached and
+  `ver all`/`uorb status` both verified, in ~20 seconds — this became
+  M3's PX4-boots-in-Renode gate rather than a separate trivial-recipe
+  test, since REQ-3's revision established there was no meaningful
+  trivial target for real `pixhawk-6x` hardware to boot before then.
 - **AC-3** — CI job (or documented equivalent invocation) covering
   AC-1 + AC-2 exists and is green.
 - **AC-4** — Spec 000 §4.1 marked decided; §6 below filled in; M0
