@@ -22,6 +22,22 @@
 // the base repl, no overlay needed for it either.
 using "platforms/cpus/stm32h743.repl"
 
+// Real correctness fix, tried as a hypothesis for gap #5 (spec 003
+// section 5.3/6) but confirmed NOT to be its cause: the base repl's
+// `nvic` sets systickFrequency: 96_000_000, but fmu-v6x's real
+// board.h configures STM32_CPUCLK_FREQUENCY = STM32_PLL1P_FREQUENCY =
+// 480MHz (HSE 16MHz * PLL1N(60) / PLL1P(2)) -- verified directly in
+// the real, built NuttX .config and board.h, not assumed.
+// stm32_timerisr.c computes SYSTICK_RELOAD = (STM32_CPUCLK_FREQUENCY
+// / CLK_TCK) - 1, i.e. it assumes a 480MHz counter, a real 5x
+// mismatch against the base repl's 96MHz -- worth fixing regardless
+// of gap #5, since it's simply the correct value for this chip.
+// Confirmed via a real re-test that this fix alone does NOT change
+// gap #5's observed timing pattern -- the actual bug is elsewhere
+// (see spec 003 section 5.3's "follow-up investigation").
+nvic:
+    systickFrequency: 480000000
+
 // PWR/RCC fidelity gap (spec 000 R2, spec 003 section 5.3), confirmed
 // by real boot attempts: NuttX's stm32h7x3xx_rcc.c has two
 // unconditional busy-waits back to back during clock config (no
