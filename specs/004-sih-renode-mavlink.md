@@ -1,6 +1,15 @@
 # Spec 004 (M4): SIH-in-Renode simulation + MAVLink bridge
 
-- **Status:** Draft
+- **Status:** In progress — REQ-1/REQ-2 implemented and largely
+  verified (§6): SIH is enabled and genuinely running in Renode with
+  correct physics and correctly-flagged simulated sensor data. One
+  real, unresolved discrepancy blocks arming: `commander check`
+  reports "Preflight check: FAILED" and `health_and_arming_checks`
+  reports "No valid data from Accel/Gyro/Baro/Compass" even though a
+  direct `listener sensor_accel` query moments earlier showed fresh,
+  physically-correct data (`z: -9.81024`, i.e. exactly gravity,
+  `device_id` tagged `SIMULATION:1`). REQ-3 through REQ-6 not yet
+  started.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md) (G4, R2),
   [003-renode-boot.md](003-renode-boot.md) (Done: PX4 boots to a live
@@ -71,14 +80,15 @@ and assigns the research risk to this milestone, not M3.
 
 ## 3. Requirements
 
-- **REQ-1** — A SIH-enabled firmware variant exists
+- **REQ-1** — **Done.** A SIH-enabled firmware variant exists
   (`CONFIG_MODULES_SIMULATION_SIMULATOR_SIH=y` plus its Kconfig
-  dependencies). Decide with evidence during implementation whether
-  this piggybacks on the existing `px4-firmware-renode` variant
-  (already Renode-only, already carrying one NuttX config patch) or
-  needs its own — try the simpler, single-variant path first.
-- **REQ-2** — `SYS_AUTOSTART` selects the existing `1100_rc_quad_x_sih`
-  airframe (simplest vehicle type) rather than authoring a new one.
+  dependencies), extending `px4-firmware-renode` per §5.1's simpler
+  path. Verified genuinely running with correct physics and correctly-
+  flagged simulated sensor data (§6), not just "compiles."
+- **REQ-2** — **Done.** `SYS_AUTOSTART` selects the existing
+  `1100_rc_quad_x_sih` airframe (simplest vehicle type) rather than
+  authoring a new one — confirmed via real boot log
+  (`Loading airframe: /etc/init.d/airframes/1100_rc_quad_x_sih.hil`).
 - **REQ-3** — MAVLink is verified reachable from the *host* (not just
   visible in Renode's own console log) via a real socket-level check
   — actually connect and observe a MAVLink heartbeat, not infer
@@ -159,14 +169,82 @@ should be verified, not assumed to be a blocker going in.
 
 ## 6. Implementation record
 
-_Not yet started._
+**REQ-1/REQ-2 (SIH enabled, quad-X airframe forced): done.** Extended
+`px4-firmware-renode` (§5.1's simpler-first option, confirmed workable)
+with a third patch
+(`0003-boards-px4-fmu-v6x-enable-SIH-and-force-quad-X-SIH.patch`):
+adds `CONFIG_MODULES_SIMULATION_SIMULATOR_SIH=y` to
+`boards/px4/fmu-v6x/default.px4board`, and `param set SYS_AUTOSTART
+1100` to `boards/px4/fmu-v6x/init/rc.board_defaults` (runs before
+rcS's airframe-selection step, so it takes effect every boot despite
+no persistent parameter storage).
+
+**Real build failure, fixed with evidence, not guessed:** the first
+attempt overflowed fmu-v6x's FLASH region by 47,052 bytes — SIH's
+physics/EKF-adjacent code doesn't fit alongside the full real-hardware
+driver set. Fixed by removing, in the same patch, real-hardware
+drivers/modules made genuinely redundant by SIH's own simulated
+backends and by this variant only ever running the quad-X airframe:
+all real IMU/barometer/magnetometer chip drivers (9 IMU variants, 3
+barometer variants), `UAVCAN`, camera/gimbal/OSD peripherals,
+differential pressure (airspeed — irrelevant to a multirotor), and
+the fixed-wing/VTOL flight-control modules (`FW_*`,
+`VTOL_ATT_CONTROL`, `MODE_NAVIGATOR_VTOL_TAKEOFF`). None of the
+removed drivers did anything useful in this environment anyway — M3's
+own boot log already showed every one of them reporting "no device on
+bus". Rebuild succeeded. One expected, harmless side effect: the
+`1100` airframe's own `param set UAVCAN_ENABLE 0` now logs
+`ERROR [param] Parameter UAVCAN_ENABLE not found` (the parameter no
+longer exists since `UAVCAN` was removed) — cosmetic, not a failure.
+
+**Verified SIH is genuinely running, with real physics and real
+simulated sensor data** — via the interactive Renode session
+technique proven in spec 003 (raw `usart3 WriteChar` monitor commands
+turned out not to inject RX data the way assumed; switched to
+reusing the already-proven `renode-test`/`Write Line To Uart`
+mechanism instead, forcing a deliberate assertion failure to capture
+the full console dump, the same technique that recovered the real
+`uorb status` output in spec 003):
+- `simulator_sih status` printed live physics state: vehicle type
+  "Quadcopter", landed state, local position/velocity (NED),
+  attitude (roll/pitch/yaw), angular acceleration, actuator signals,
+  aerodynamic forces/moments — all populated with physically sensible
+  resting-on-ground values, not zeros-because-uninitialized or stale
+  data.
+- `listener sensor_accel -n 1` showed a fresh sample (`timestamp: ...
+  1.334135 seconds ago`) with `device_id` explicitly flagged
+  `SIMULATION:1`, and `z: -9.81024` — exactly Earth gravity for a
+  stationary vehicle. This is real, correct, actively-updating
+  simulated sensor data, not a stub.
+
+**Open discrepancy, not yet resolved:** despite the above, `commander
+check` reports `Preflight check: FAILED`, and
+`health_and_arming_checks` repeatedly logs `Preflight Fail: No valid
+data from Accel/Baro/Gyro/Compass 0` — both immediately after the
+`listener` query above and several seconds later, so this isn't
+simply "hadn't started yet." Traced the exact check condition in
+`src/modules/commander/HealthAndArmingChecks/checks/
+accelerometerCheck.cpp`: `is_valid = _sensor_accel_sub[instance]
+.copy(&accel_data) && (accel_data.device_id != 0) &&
+(accel_data.timestamp != 0)`, a `SubscriptionMultiArray` on the same
+raw `ORB_ID::sensor_accel` topic the `listener` command reads — not a
+calibration issue (that's a separate `is_calibration_valid` check,
+which would produce a different log message). Root cause not yet
+found: possibly the check's own subscription only samples
+periodically and happens to catch a gap between SIH publish cycles,
+or something more specific to `advertised()` state — needs further,
+more targeted tracing (e.g. watching the check's own periodic
+evaluation across several cycles) rather than a single point-in-time
+`listener` snapshot.
 
 | Item | Decision / evidence |
 |---|---|
-| SIH variant: extends `px4-firmware-renode` or new recipe? | _tbd_ |
-| MAVLink bridge transport: Ethernet or UART? | _tbd_ |
-| Host MAVLink tooling: OE recipe or host prerequisite? | _tbd_ |
-| Timer/virtual-time fidelity under SIH | _tbd_ |
+| SIH variant: extends `px4-firmware-renode` or new recipe? | **Extends it** — confirmed workable, one additional patch, no need for a separate recipe. |
+| MAVLink bridge transport: Ethernet or UART? | _tbd — not yet attempted_ |
+| Host MAVLink tooling: OE recipe or host prerequisite? | _tbd — not yet attempted_ |
+| Timer/virtual-time fidelity under SIH | _tbd — SIH itself runs and produces correct physics; whether it holds up through a full arm→takeoff→land sequence is not yet tested_ |
+| FLASH budget for the SIH variant | **Real constraint hit and fixed** — see above. Removing real-hardware drivers redundant with SIH's simulated backends was necessary, not optional. |
+| Arming blocked by a real, unresolved sensor-validity discrepancy | **Yes** — see "Open discrepancy" above. This is the current blocker for REQ-5 (scripted arm→takeoff→land). |
 
 ## 7. Acceptance criteria
 
