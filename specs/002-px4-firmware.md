@@ -1,6 +1,8 @@
 # Spec 002 (M2): Offline PX4 NuttX firmware recipes
 
-- **Status:** Draft
+- **Status:** In progress — `px4-firmware` builds successfully (§7);
+  `px4-io-firmware`/`px4-bootloader`/deploy-wiring/reproducibility
+  remain
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (M1 must have
@@ -222,30 +224,69 @@ back to (b) only if it proves impractical.
 
 ## 6. Acceptance criteria
 
-- **AC-1** — `bitbake mc:pixhawk6x:px4-firmware` succeeds offline
-  (REQ-2, REQ-8).
-- **AC-2** — `.elf` and `.px4` artifacts exist in `DEPLOY_DIR_IMAGE`
-  (REQ-6).
+- **AC-1** — **Done.** `bitbake mc:pixhawk6x:px4-firmware` succeeds:
+  2011/2011 tasks, zero errors (REQ-2, REQ-8). Not yet re-tested with
+  `BB_NO_NETWORK=1` explicitly set (the microcdr mirror redirect in
+  §7 makes this the expected outcome, but "expected" isn't "verified"
+  — do that pass before calling REQ-2 fully closed).
+- **AC-2** — **Partially done.** `px4_fmu-v6x_default.elf` and
+  `px4_fmu-v6x_default.px4` genuinely exist in `${B}` (not yet in
+  `DEPLOY_DIR_IMAGE` — REQ-6's `inherit deploy` wiring hasn't been
+  added yet, this is the next concrete step). Verified the ELF for
+  real with `arm-none-eabi-readelf -A`: `Tag_CPU_name: "7E-M"`,
+  `Tag_FP_arch: FPv5/FP-D16` — exactly the target chip's
+  architecture/FPU, not just "a build succeeded."
 - **AC-3** — Two clean builds produce byte-identical artifacts
-  (REQ-7).
+  (REQ-7) — not yet tested.
 - **AC-4** — **Done.** §2's CDRSTREAM question is answered with cited
   Kconfig evidence: OFF for `px4_fmu-v6x_default`
   (`MODULES_ZENOH` is the only selector and it's unset).
-  `UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON` remains REQ-3's live
-  requirement — CDRSTREAM being off only rules out needing
-  `PX4_BUILD_IDLC=OFF` alongside it.
 - **AC-5** — `px4-io-firmware` and `px4-bootloader` both build and
-  deploy (REQ-4, REQ-5).
+  deploy (REQ-4, REQ-5) — not started.
 - **AC-6** — Existing `px4-autopilot` (posix) and M1's
   `baremetal-helloworld` builds are provably unaffected by the new
-  recipes/layers.
+  recipes/layers — not re-verified since `px4-firmware` landed
+  (plausible given they're separate recipes/machines, but "plausible"
+  isn't "checked").
 
 ## 7. Implementation record (fill during/after implementation)
+
+**`px4-firmware` builds successfully as of 2026-07-25**, after three
+real bugs found and fixed by actually running the build (not by
+static review):
+
+1. **`HOSTCC`** — NuttX compiles several host-side build tools
+   (`incdir`, `mkdeps`, ...) with a *native* compiler, entirely
+   separate from `arm-none-eabi`. `tools/Config.mk` defaults
+   `HOSTCC ?= cc`, but bare `cc` (unlike `gcc`) isn't in oe-core's
+   `HOSTTOOLS` allowlist. Fixed with `export HOSTCC = "gcc"` in
+   `px4-firmware.inc` (`?=` lets the inherited environment variable
+   win).
+2. **`pkg_resources`** — PX4's libuavcan DSDL compiler still imports
+   it directly; setuptools 82.0.0 (Feb 2026) removed the module
+   entirely upstream (confirmed via web search, not assumed:
+   [pypa/setuptools#5174](https://github.com/pypa/setuptools/issues/5174)).
+   Added `python3-pkg-resources_81.0.0.bb` (last pre-removal release,
+   version/checksum verified via PyPI's JSON API), providing just the
+   `pkg_resources/` module alongside oe-core's own (82.0.1) setuptools.
+3. **Micro-CDR nested fetch** — `Micro-XRCE-DDS-Client`'s own
+   `SuperBuild.cmake` does its own `ExternalProject_Add` git clone of
+   Micro-CDR at compile time (the exact tradeoff flagged when
+   `UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS` was scoped out below). Fixed by
+   fetching the same pinned ref (`tag v2.0.1`, matching
+   `microcdr_2.0.1.bb`'s own pin) as a second named `SRC_URI` and
+   redirecting that exact `GIT_REPOSITORY` URL to the local copy via
+   a task-scoped `GIT_CONFIG_GLOBAL` in `do_compile:prepend` —
+   deliberately not `git config --global`, since `HOME` in this
+   sandboxed task is the real build user's home directory, not
+   isolated.
 
 | Item | Decision / evidence |
 |---|---|
 | CDRSTREAM status for fmu-v6x (§2) | **OFF** — only `MODULES_ZENOH` selects `LIB_CDRSTREAM`, and it's unset for `px4_fmu-v6x_default`. `PX4_BUILD_IDLC=OFF` not needed. Verified via kconfiglib `defconfig.py` run against the real `Kconfig` tree with `cmake/kconfig.cmake`'s exact env vars, cross-checked against known-true `CONFIG_MODULES_UXRCE_DDS_CLIENT=y`. |
-| Which of patches 0001-0003 apply to px4-firmware | _tbd_ |
-| px4io multiconfig vs. nested-build decision (§5.4) | _tbd_ |
+| UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS | **Deliberately not set** (maintainer decision, §5.2) — PX4 builds `microcdr`/`microxrceddsclient` itself via its own nested build; the resulting network fetch is redirected to a local mirror (see numbered list above) rather than solved via prebuilt system libs. |
+| Which of patches 0001-0003 apply to px4-firmware | **0001: omitted** (confirmed necessary by reading the patch + `cmake.bbclass` source, §5.2). **0002/0003: not carried** (UXRCE system-libs scoped out, row above). The build succeeded without any of the three, so none are currently needed — revisit only if a real failure demands one. |
+| px4io multiconfig vs. nested-build decision (§5.4) | _tbd — not yet started_ |
 | Byte-reproducibility confirmed | _tbd_ |
-| Toolchain gap vs. M1 findings (§5.3) | _tbd_ |
+| Toolchain gap vs. M1 findings (§5.3) | **None found** — `gcc-arm-none-eabi-native` (spec 001 §6) plus the unpatched kconfig force-override was sufficient; no additional toolchain work was needed beyond the three bugs above. |
+| REQ-6 deploy wiring | _tbd — `.elf`/`.px4` currently only exist in `${B}`, not `DEPLOY_DIR_IMAGE`; next concrete step_ |
