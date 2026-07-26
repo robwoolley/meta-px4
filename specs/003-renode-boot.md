@@ -317,11 +317,43 @@ surface query-command output, unlike headless `-e` batch mode.
   (something in this specific call chain isn't blocking on ticks
   properly) still stands; what's newly ruled out is any explanation
   resting on the *global* clock/scheduler being broken, or on the
-  simulation merely being "slow but working." The exact code path
-  responsible (confirmed not `ramtron_attach`'s own bounded 30-attempt
-  loop by itself, since that alone cannot explain million-plus
-  repeats of the single terminal error message) has not yet been
-  located.
+  simulation merely being "slow but working."
+
+**Root cause found: it was never `px4_mtd.cpp`'s retry loop at
+all.** Paused the live instance repeatedly via the interactive
+session and read `cpu PC`/`cpu LR` each time, resolving the addresses
+against the real ELF with `arm-none-eabi-addr2line`. Five samples
+across several real seconds: four landed squarely inside
+`up_dma_send`/`up_dma_txavailable` (`arch/arm/src/chip/stm32_serial.c`
+lines 3386-3441) and one inside `stm32_sdma_interrupt`
+(`arch/arm/src/chip/stm32_dma.c:1230`, reached via `irq_dispatch`) —
+the STM32 serial driver's **DMA-based UART transmit path and its
+completion interrupt handler**, not anywhere in `px4_mtd.cpp`.
+
+This means the actual MTD failure almost certainly happened *once*,
+as a normal bounded event — but the resulting `PX4_ERR` console
+message got stuck being **re-transmitted forever** by the serial
+driver's DMA logic, because Renode's `DMA.STM32DMA` model for `dma2`
+never signals the transfer-complete condition `up_dma_send` is
+waiting for (matching the constant stream of `dma2: Unhandled write`
+warnings seen throughout — `TEIE`, `CFEIF0`/`CDMEIF0`/`CTEIF0`/
+`CHTIF0`, `TRBUFF`, register bits/features the model doesn't
+implement). Confirmed the console is configured for exactly this
+path: `boards/px4/fmu-v6x/nuttx-config/nsh/defconfig` sets
+`CONFIG_USART3_TXDMA=y` (and `CONFIG_USART3_RXDMA=y`) for the console
+UART.
+
+This reframes gap #5 entirely: it is likely **not** a NuttX task-
+delay/scheduling bug at all (the tick mechanism is proven correct),
+but an incomplete Renode DMA controller model interacting badly with
+DMA-based console TX specifically. The MTD retry itself may already
+be working exactly as designed underneath the runaway retransmission.
+Two realistic fixes, not yet decided (see below): (a) disable
+`CONFIG_USART3_TXDMA`/`RXDMA` for a Renode-specific build variant, or
+(b) find a Renode-side DMA2 configuration/model fix. This changes the
+relationship between M2 and M3: M3 was assumed to boot the *exact*
+M2-built `px4-firmware` artifact unmodified; option (a) would instead
+need a distinct, Renode-only build configuration.
 
 ## 6. Implementation record
 
