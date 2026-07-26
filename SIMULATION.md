@@ -142,15 +142,31 @@ At the `(monitor)` prompt:
 set bin @/absolute/path/to/px4-firmware-renode-1.17.0-pixhawk-6x.elf
 set repl @recipes-renode/pixhawk6x/pixhawk6x.repl
 include @recipes-renode/pixhawk6x/pixhawk6x-boot.resc
+emulation CreateServerSocketTerminal 3456 "term"
+connector Connect sysbus.usart3 term
 start
 ```
 
-This opens a UART analyzer window attached to the console
-(`usart3`) showing the live boot log; once it reaches `nsh>` you can
-type NSH commands directly into that window (typing straight into the
-`(monitor)` prompt itself does not reach the emulated UART — Renode's
-analyzer window is the terminal, the monitor is a separate control
-channel).
+Then, in a **separate** terminal:
+
+```sh
+telnet localhost 3456
+```
+
+That telnet session is the actual NSH console — type commands into it
+once you see `nsh>`.
+
+`pixhawk6x-boot.resc` also runs `showAnalyzer usart3`, which pops up a
+GUI window mirroring the same UART output. That window is only useful
+for watching the log: it's a separate window from the one running the
+`(monitor)` prompt, and typing does nothing unless it both has a real
+display to render into *and* has actual keyboard focus (click into it
+first) — in practice, over SSH, in a tiling window manager, or in any
+setup without a full desktop session, it either doesn't grab focus or
+doesn't appear at all, even though the text keeps rendering. The
+`CreateServerSocketTerminal`/`telnet` combination above works
+regardless of GUI/focus state and is the reliable way to actually type
+into the shell.
 
 Useful things to try once you have a shell:
 
