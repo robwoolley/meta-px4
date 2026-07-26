@@ -1,0 +1,7 @@
+# renode-test generates these in the cwd it's invoked from -- ephemeral
+# test-run output, not layer source.
+/log.html
+/report.html
+/robot_output.xml
+/logs/
+/snapshots/

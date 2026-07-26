@@ -1,21 +1,17 @@
 # Spec 003 (M3): PX4 boots in Renode
 
-- **Status:** In progress — real boot attempts made substantial,
-  evidence-based progress (§6): Renode installed, board `.repl`
-  written, five distinct real fidelity gaps found and fixed so far
-  (two PWR busy-waits, one USB OTG busy-wait, `spi5` unmodeled, and a
-  DMA-based console UART retransmission bug — the last one root-caused
-  via `cpu PC`/`LR` sampling in Renode's interactive monitor to a
-  Renode DMA2 model gap, not a NuttX bug, and fixed via a new
-  Renode-only `px4-firmware-renode` recipe carrying one extra patch
-  that disables `CONFIG_USART3_TXDMA`/`RXDMA`). Verified directly: the
-  fix took the "failed to initialize mtd driver" message from 1.12
-  million+ repeats down to exactly once, followed by genuine new boot
-  output never reached before. Currently blocked by a sixth, much
-  smaller gap: `SDMMC2` is unmodeled (only ~3,157 occurrences, not
-  millions — a normal peripheral-probe gap like `spi5`'s, not another
-  deep issue). NSH prompt not yet reached; REQ-4/AC-3 (and spec 001's
-  deferred REQ-4/AC-2) remain open.
+- **Status: Done.** PX4 boots all the way to a live NSH prompt in
+  Renode and passes `ver all`/`uorb status`, verified headlessly via
+  `renode-test` (`recipes-renode/pixhawk6x/pixhawk6x-boot.robot`,
+  ~20 seconds, `status OK`). Seven distinct real fidelity gaps were
+  found and fixed along the way (§6): two PWR busy-waits, one USB OTG
+  busy-wait, `spi1`/`spi2`/`spi3`/`spi5`/`spi6` unmodeled, `SDMMC2`
+  unmodeled, and — the deepest one — a DMA-based console UART
+  retransmission bug, root-caused via `cpu PC`/`LR` sampling in
+  Renode's interactive telnet monitor to a Renode DMA2 model gap (not
+  a NuttX bug), fixed via a new Renode-only `px4-firmware-renode`
+  recipe that disables `CONFIG_USART3_TXDMA`/`RXDMA`. This closes
+  REQ-4/AC-3 and spec 001's deferred REQ-4/AC-2.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (REQ-4/AC-2
@@ -79,38 +75,55 @@ part of this milestone's real work, not assumed available.
 
 ## 3. Requirements
 
-- **REQ-1** — Renode is brought up on the development host via a
-  pinned, documented version (portable release preferred over a
+- **REQ-1** — **Done.** Renode is brought up on the development host
+  via a pinned, documented version (portable release preferred over a
   system package), with the exact version recorded in §6 once
-  installed — not left as "whatever was latest."
-- **REQ-2** — `recipes-renode/pixhawk6x/pixhawk6x.repl` uses Renode's
-  own `platforms/cpus/stm32h743.repl` as its base (`using
+  installed — not left as "whatever was latest." (1.16.1, §6.)
+- **REQ-2** — **Done.** `recipes-renode/pixhawk6x/pixhawk6x.repl` uses
+  Renode's own `platforms/cpus/stm32h743.repl` as its base (`using
   "platforms/cpus/stm32h743.repl"`) plus only the board-level deltas
-  actually needed (memory aliasing consistent with
-  `boards/px4/fmu-v6x/nuttx-config/scripts/script.ld`'s flash/RAM
-  layout already recorded in `conf/machine/include/stm32h7.inc`; UART
-  wiring for the real console, USART3 per §2).
-- **REQ-3** — `recipes-renode/pixhawk6x/pixhawk6x-boot.resc` creates
-  the machine from that `.repl`, loads
-  `px4-firmware-1.17.0-pixhawk-6x.elf` from `DEPLOY_DIR_IMAGE` (not a
-  hardcoded build-tree path), and starts emulation headless-compatible
-  (no interactive-only Renode monitor commands).
-- **REQ-4** — A Robot Framework test (`recipes-renode/pixhawk6x/
-  pixhawk6x-boot.robot` or similar) drives the `.resc`, attaches a
-  UART analyzer to the console UART, and asserts: NSH prompt
-  (`nsh>`) appears within a bounded virtual-time window; `uorb status`
-  returns without error; `ver all` returns without error and echoes
-  recognizable PX4 version/build info. This directly satisfies spec
-  001's deferred REQ-4/AC-2 as well as this milestone's own gate.
-- **REQ-5** — The robot test runs headless via `renode-test`, exit
-  code reflects pass/fail, runnable both interactively (for
-  development) and in a CI-equivalent invocation (documented command,
-  even if the actual CI pipeline itself is M6's job).
-- **REQ-6** — Document (§6) any real fidelity gaps hit during
-  bring-up (e.g. spec 000 R2's flagged PWR/RCC simplification or
-  `CONFIG_STM32H7_PWR_IGNORE_ACTVOSRDY`), with the actual NuttX board
-  config change needed to work around them if one is required —
+  actually needed: no memory-region deltas (verified byte-for-byte
+  match, §6), but real fidelity gaps did require deltas beyond the
+  original UART-only expectation — PWR register tags,
+  `spi1`/`spi2`/`spi3`/`spi5`/`spi6`, and `SDMMC2` all needed modeling
+  (§5.3/§6).
+- **REQ-3** — **Done, with a deliberate deviation from the original
+  wording.** `recipes-renode/pixhawk6x/pixhawk6x-boot.resc` creates
+  the machine from that `.repl` and starts emulation headless-
+  compatible. It loads `px4-firmware-renode-1.17.0-pixhawk-6x.elf`
+  from `DEPLOY_DIR_IMAGE` — the Renode-only variant (§5.3 gap #5),
+  not `px4-firmware-1.17.0-pixhawk-6x.elf` (the real hardware image)
+  as originally assumed here, since the real image's DMA-based
+  console I/O cannot complete under Renode's DMA2 model. Both are
+  still not hardcoded build-tree paths; the ELF path is a `$bin`
+  monitor variable set by the caller.
+- **REQ-4** — **Done.** A Robot Framework test
+  (`recipes-renode/pixhawk6x/pixhawk6x-boot.robot`) drives the
+  `.resc`, attaches a UART analyzer to the console UART, and asserts:
+  NSH prompt (`nsh>`) appears within a bounded virtual-time window;
+  `uorb status` returns without error; `ver all` returns without
+  error and echoes recognizable PX4 version/build info. Verified
+  against real console output, not guessed — see §6. This directly
+  satisfies spec 001's deferred REQ-4/AC-2 as well as this milestone's
+  own gate.
+- **REQ-5** — **Done.** The robot test runs headless via
+  `renode-test` (`renode-test recipes-renode/pixhawk6x/
+  pixhawk6x-boot.robot --variable ELF:@<path-to-elf>`), exit code
+  reflects pass/fail (`status OK`, ~20 seconds), runnable both
+  interactively (for development) and in a CI-equivalent invocation
+  (documented command, even if the actual CI pipeline itself is M6's
+  job).
+- **REQ-6** — **Done.** Document (§6) any real fidelity gaps hit
+  during bring-up (e.g. spec 000 R2's flagged PWR/RCC simplification
+  or `CONFIG_STM32H7_PWR_IGNORE_ACTVOSRDY`), with the actual NuttX
+  board config change needed to work around them if one is required —
   fixed forward from a real boot failure, not pre-emptively guessed.
+  Seven gaps found this way, documented in §5.3/§6; only one
+  (the DMA-based console retransmission) needed a NuttX config change
+  (`CONFIG_USART3_TXDMA`/`RXDMA`, carried only by the new
+  `px4-firmware-renode` recipe) — `CONFIG_STM32H7_PWR_IGNORE_ACTVOSRDY`
+  itself turned out not to exist at this SRCREV (checked directly),
+  so all other fixes are Renode-side `.repl` additions.
 
 ## 4. Non-goals
 
@@ -385,29 +398,80 @@ conclusively confirms the root-cause diagnosis: the earlier "infinite
 loop" was entirely the DMA UART retransmission bug, not a problem
 with `px4_mtd.cpp`'s own retry logic or the scheduler.
 
-Boot now progresses to a **new, different, and far less severe**
+Boot then progressed to a new, different, and far less severe
 peripheral gap: repeated `ReadDoubleWord` from `0x48022434` (`SDMMC2`
 range, per the base repl's own `Tag <0x48022400, 0x480227FF>
 "SDMMC2"` — an inert stub, no real `SD.STM32HSDMMC` object modeled
 for it, unlike `SDMMC1` at `0x52007000` which the base repl does
 model). Only ~3,157 occurrences in a 90-second real-time run (versus
-1.12 million+ for the DMA bug) — this is a normal, bounded-looking
+1.12 million+ for the DMA bug) — a normal, bounded-looking
 peripheral-probe gap of the same general kind already fixed for
-`spi5`, not evidence of another deep timing issue. Not yet fixed —
-natural next step for continuing M3.
+`spi5`, not evidence of another deep timing issue. **Fixed** by
+modeling `sdmmc2` as `SD.STM32HSDMMC` (IRQ 124, per
+`STM32_IRQ_SDMMC2 = STM32_IRQ_FIRST + 124` for the stm32h7x3xx family
+— checked directly in NuttX's own IRQ header, not assumed).
+
+That fix unblocked the boot far enough to hit the same class of gap
+on the remaining SPI buses fmu-v6x enables
+(`CONFIG_STM32H7_SPI1/2/3/6=y`, in addition to SPI4/5 already
+modeled/fixed) — `spi1`/`spi2`/`spi3`/`spi6` were all still inert
+`Tag` stubs in the base repl. **Fixed** proactively (all four at
+once, rather than one real-hang-at-a-time) by modeling them the same
+way as `spi4`/`spi5`. Note the base repl's own tag labels for
+`0x40003800`/`0x40003C00` match the *real* STM32H7 memory map
+(SPI2/SPI3 respectively) — the more common assumption that SPI2 is
+at `0x40003C00` is backwards; verified directly against the repl, not
+assumed.
+
+**After all seven gaps were fixed, PX4 reaches a genuine, live NSH
+prompt** — confirmed with real console output: full boot banner
+(`HW arch: PX4_FMU_V6X`, PX4/NuttX versions, git hashes), sensor
+probes correctly reporting "no device on bus" (expected — no sensor
+chips are modeled), MAVLink/logger/uavcan startup, and finally
+`NuttShell (NSH) NuttX-11.0.0` followed by a working `nsh>` prompt.
+
+**Automated via `renode-test`** (`recipes-renode/pixhawk6x/
+pixhawk6x-boot.robot`), after fixing two harness-specific issues
+unrelated to the firmware itself:
+- Relative paths in `.resc`/`.repl` `include`/`LoadPlatformDescription`
+  calls depend on Renode's own working directory, which differs
+  between a direct `renode -e` invocation (the shell's cwd) and
+  `renode-test` (its own internal cwd). Fixed by passing both the ELF
+  and `.repl` paths as monitor variables (`$bin`, `$repl`) built from
+  Robot Framework's `${CURDIR}`, rather than hardcoding relative paths
+  inside the `.resc`.
+- Robot Framework's space-separated test format treats runs of 2+
+  spaces as cell separators — an assertion string built from the
+  padded console header line (`TOPIC NAME               INST #SUB
+  #Q SIZE PATH`) was silently split into multiple arguments,
+  producing a confusing unrelated .NET exception rather than a clear
+  parse error. Fixed by asserting on a short, space-safe substring
+  (`TOPIC NAME`) instead of the full padded line.
+- The initial guess for the `uorb status` assertion text
+  (`uorb total subscribers`) was wrong, exactly as expected for an
+  unverified guess — found the real output (`TOPIC NAME` header,
+  followed by the topic table) by reading the full saved Renode log
+  from a failed test run, then corrected the assertion.
+
+Final result: `renode-test recipes-renode/pixhawk6x/
+pixhawk6x-boot.robot` passes in **~20 seconds**, `status OK` —
+`ver all` and `uorb status` both verified against real, not guessed,
+output.
 
 ## 6. Implementation record
 
 | Item | Decision / evidence |
 |---|---|
-| Renode version installed | **1.16.1** (`renode-1.16.1.linux-portable-dotnet.tar.gz`, self-contained with bundled .NET runtime — no root/system dependency). Downloaded from the official GitHub release; SHA-256 verified against GitHub's own published digest before extracting. Installed under `oe-px4/tools/renode/` (host tooling, gitignored, same convention as `bitbake`/`bitbake-builds`). |
+| Renode version installed | **1.16.1** (`renode-1.16.1.linux-portable-dotnet.tar.gz`, self-contained with bundled .NET runtime — no root/system dependency). Downloaded from the official GitHub release; SHA-256 verified against GitHub's own published digest before extracting. Installed under `oe-px4/tools/renode/` (host tooling, gitignored, same convention as `bitbake`/`bitbake-builds`). A separate Python venv (`oe-px4/tools/renode-test-venv/`, also gitignored) provides `renode-test`'s own dependencies (`robotframework`, `psutil`, etc., per its `tests/requirements.txt`). |
 | stm32h743.repl peripheral names (UART numbering) | Console is `usart3` (`UART.STM32F7_USART @ sysbus 0x40004800`), matching `CONFIG_USART3_SERIAL_CONSOLE=y`. Checked directly in the installed Renode's own copy of the platform file, not from memory of docs. |
 | Memory-region deltas needed | **None.** Every `MEMORY` region in the real `script.ld` (ITCM/FLASH/DTCM1+2/AXI_SRAM/SRAM1-4/BKPRAM) matches an existing `stm32h743.repl` object exactly, byte for byte — verified by direct comparison before writing the overlay, not assumed from the M1 flash/RAM constants alone. |
-| Boot result on first attempt (unmodified NuttX config, base repl) | **Hung immediately** on `PWR_CSR1.ACTVOSRDY` busy-wait (gap #1 above). |
-| PWR/RCC fidelity gap encountered? | **Yes — three separate busy-waits** (gaps #1-3 above), all fixed via `.repl` `Tag` overrides, no NuttX source patch (confirmed no existing NuttX config option covers any of them at this SRCREV). |
-| `spi5` fidelity gap | **Yes** (gap #4) — fixed by modeling it as `SPI.STM32H7_SPI`, matching the base repl's own treatment of `spi4`. |
-| Reached PX4 application code? | **Yes** — real `usart3` console output with PX4's own log tags, past all boot-time clock/power/USB/SPI-bus bring-up. |
-| NSH prompt reached? | **Not yet** — blocked by gap #5 (task-delay/tick fidelity, see above). |
+| Boot result on first attempt (unmodified NuttX config, base repl) | **Hung immediately** on `PWR_CSR1.ACTVOSRDY` busy-wait (gap #1). |
+| PWR/RCC fidelity gaps | **Three separate busy-waits** (gaps #1-3), all fixed via `.repl` `Tag` overrides, no NuttX source patch (confirmed no existing NuttX config option covers any of them at this SRCREV). |
+| DMA-based console UART retransmission (gap #5) | Root-caused via `cpu PC`/`LR` sampling over Renode's interactive telnet monitor (`-P <port>` + a raw Python `socket` client — headless `-e` batch mode doesn't surface query-command output) resolved against the real ELF with `arm-none-eabi-addr2line`: stuck in `up_dma_send`/`stm32_sdma_interrupt` (serial driver DMA path), not `px4_mtd.cpp`. Renode's `DMA.STM32DMA` model for `dma2` never signals transfer-complete, so the console's DMA-based TX loops forever re-sending one buffered message. Fixed via a new `px4-firmware-renode` recipe (patch disabling `CONFIG_USART3_TXDMA`/`RXDMA`) — the real hardware `px4-firmware` recipe is unaffected. Verified directly: took the repeated error message from 1.12 million+ occurrences down to exactly one. |
+| `spi1`/`spi2`/`spi3`/`spi5`/`spi6` fidelity gaps | **Yes** (gaps #4, #7) — all fixed by modeling them as `SPI.STM32H7_SPI`, matching the base repl's own treatment of `spi4`. `stm32_spi.c`'s SPI driver has unconditional, unbounded `while` waits on `SPI_SR` with no timeout at all, so any unmodeled SPI bus hangs forever on first real transfer. |
+| `SDMMC2` fidelity gap | **Yes** (gap #6) — fixed by modeling it as `SD.STM32HSDMMC` (IRQ 124), matching the base repl's own treatment of `SDMMC1`. |
+| Reached PX4 application code? | **Yes**, and further: reached a fully live NSH prompt with `ver all`/`uorb status` both verified. |
+| NSH prompt reached? | **Yes** — confirmed via a real `renode-test` run, `status OK`, ~20 seconds. |
 
 ## 7. Acceptance criteria
 
@@ -418,10 +482,10 @@ natural next step for continuing M3.
   real `DEPLOY_DIR_IMAGE` ELF and start emulation without Renode
   errors, reaching genuine PX4 application code on the console
   (REQ-2, REQ-3).
-- **AC-3** — **Not yet done.** `nsh>` prompt not yet reached — blocked
-  by gap #5 (§5.3/§6: task-delay/tick fidelity). `uorb status`/`ver
-  all` not yet exercised. Spec 001's deferred REQ-4/AC-2 remains open
-  for the same reason.
-- **AC-4** — **Done so far, ongoing.** Four real fidelity gaps found
-  and fixed are documented with their actual fixes in §5.3/§6 (REQ-6);
-  gap #5 is documented as the current open blocker, not yet fixed.
+- **AC-3** — **Done.** `renode-test recipes-renode/pixhawk6x/
+  pixhawk6x-boot.robot` passes (`status OK`, ~20 seconds): `nsh>`
+  prompt reached, `ver all` and `uorb status` both verified against
+  real (not guessed) console output (REQ-4, REQ-5). This closes spec
+  001's deferred REQ-4/AC-2.
+- **AC-4** — **Done.** All seven real fidelity gaps found along the
+  way are documented with their actual fixes in §5.3/§6 (REQ-6).

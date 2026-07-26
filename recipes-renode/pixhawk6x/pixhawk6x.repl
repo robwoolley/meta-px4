@@ -75,3 +75,29 @@ sysbus:
 // SPI_SR_OFFSET confirmed this). Modeling spi5 the same way the base
 // repl already models spi4 is the correct fix, not a workaround.
 spi5: SPI.STM32H7_SPI @ sysbus 0x40015000
+
+// Gap #6 (spec 003 section 6), found the same way as spi5 above,
+// after fixing gap #5 (DMA console retransmission, px4-firmware-renode
+// recipe) let the boot progress far enough to reach it: fmu-v6x uses
+// SDMMC2 for its SD card (CONFIG_STM32H7_SDMMC2=y in nsh/defconfig),
+// but the base repl only models SDMMC1 (`sdmmc`, at 0x52007000) as a
+// real SD.STM32HSDMMC peripheral -- SDMMC2 (0x48022400) is left an
+// inert Tag stub. STM32_IRQ_SDMMC2 = STM32_IRQ_FIRST + 124 for the
+// stm32h7x3xx family (arch/arm/include/stm32h7/stm32h7x3xx_irq.h),
+// hence nvic@124.
+sdmmc2: SD.STM32HSDMMC @ sysbus 0x48022400
+    IRQ -> nvic@124
+
+// Gap #7 (spec 003 section 6), found the same way as spi5/sdmmc2
+// above: fmu-v6x's nsh/defconfig enables CONFIG_STM32H7_SPI1/2/3/6=y
+// (in addition to SPI4/5, already modeled/fixed), each left an inert
+// Tag stub in the base repl. Modeling all four proactively now rather
+// than fixing them one real-hang-at-a-time, since the pattern is
+// already well-established. Addresses per the base repl's own Tag
+// labels (which match the real STM32H7 memory map, not the more
+// common SPI2<0x40003800/SPI3<0x40003C00 assumption -- verified
+// directly against the repl, not assumed).
+spi1: SPI.STM32H7_SPI @ sysbus 0x40013000
+spi2: SPI.STM32H7_SPI @ sysbus 0x40003800
+spi3: SPI.STM32H7_SPI @ sysbus 0x40003C00
+spi6: SPI.STM32H7_SPI @ sysbus 0x58001400
