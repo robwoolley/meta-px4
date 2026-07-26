@@ -28,11 +28,26 @@ require px4-firmware-renode.inc
 # airframe) via rc.board_defaults, since there is no persistent
 # parameter storage in this environment for a runtime `param set` to
 # survive a reboot.
+#
+# Patch 0004 (this recipe only): specs/004-sih-renode-mavlink.md REQ-3.
+# /dev/ttyS6 (where MAVLink starts a second instance at boot, "Starting
+# MAVLink on /dev/ttyS6") is UART7 -- PX4's TELEM1 port, a physically
+# distinct peripheral from the USART3 console patch 0002 already fixed.
+# fmu-v6x's own board_dma_map.h routes UART7's RX/TX DMA onto DMA2
+# (DMAMAP_DMA12_UART7RX_1/_TX_1, the same DMAMUX2/DMA2 group as
+# USART3's own DMA2 mapping) -- the exact same DMA2 controller instance
+# Renode's DMA.STM32DMA model never signals transfer-complete on. Once
+# MAVLink actually transmits on this port, it hits the identical
+# infinite-retransmit hang already root-caused for the console,
+# freezing the whole system (the hang starves task scheduling, not
+# just that one UART). Disabling UART7 TXDMA/RXDMA sidesteps it the
+# same way patch 0002 did for the console.
 SRC_URI = "gitsm://github.com/PX4/PX4-Autopilot.git;protocol=https;branch=release/1.17 \
            git://github.com/eProsima/Micro-CDR.git;protocol=https;nobranch=1;destsuffix=git/microcdr-mirror;name=microcdr \
            file://0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch \
            file://0002-boards-px4-fmu-v6x-disable-USART3-DMA-for-Renode.patch \
            file://0003-boards-px4-fmu-v6x-enable-SIH-and-force-quad-X-SIH.patch \
+           file://0004-boards-px4-fmu-v6x-disable-UART7-TELEM1-DMA-for-Renode.patch \
 "
 
 SRCREV = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"

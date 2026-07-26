@@ -2,14 +2,16 @@
 
 - **Status:** In progress — REQ-1/REQ-2 implemented and largely
   verified (§6): SIH is enabled and genuinely running in Renode with
-  correct physics and correctly-flagged simulated sensor data. One
-  real, unresolved discrepancy blocks arming: `commander check`
-  reports "Preflight check: FAILED" and `health_and_arming_checks`
-  reports "No valid data from Accel/Gyro/Baro/Compass" even though a
-  direct `listener sensor_accel` query moments earlier showed fresh,
-  physically-correct data (`z: -9.81024`, i.e. exactly gravity,
-  `device_id` tagged `SIMULATION:1`). REQ-3 through REQ-6 not yet
-  started.
+  correct physics and correctly-flagged simulated sensor data. A
+  second real Renode DMA-model gap (UART7/TELEM1, the same class of
+  bug as spec 003's console DMA hang) was found and fixed along the
+  way — see §6. One real, unresolved discrepancy blocks arming:
+  `commander check` reports "Preflight check: FAILED" and
+  `health_and_arming_checks` reports "No valid data from
+  Accel/Gyro/Baro/Compass" even though a direct `listener
+  sensor_accel` query moments earlier showed fresh, physically-correct
+  data (`z: -9.81024`, i.e. exactly gravity, `device_id` tagged
+  `SIMULATION:1`). REQ-3 through REQ-6 not yet started.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md) (G4, R2),
   [003-renode-boot.md](003-renode-boot.md) (Done: PX4 boots to a live
@@ -237,9 +239,63 @@ more targeted tracing (e.g. watching the check's own periodic
 evaluation across several cycles) rather than a single point-in-time
 `listener` snapshot.
 
+**Second real Renode DMA-model gap found and fixed: UART7 (TELEM1),
+the same class of bug as spec 003's console DMA hang.** Discovered
+interactively: connecting to the console over a Renode
+`CreateServerSocketTerminal` socket (the documented workaround in
+`SIMULATION.md` for `showAnalyzer`'s GUI window not accepting keyboard
+input in headless/SSH setups) worked for typing commands right up
+until the console printed `Starting MAVLink on /dev/ttyS6` followed by
+`INFO [mavlink] mode: Normal, data rate: 1200 B/s on /dev/ttyS6 @
+57600B` — at which point the entire system stopped responding: no
+further `nsh>` prompts, no response to typed input, nothing.
+
+Root-caused from source, not by further live probing:
+- `/dev/ttyS6` is **UART7**, not the console — confirmed two
+  independent ways: (a) NuttX's `stm32_serial.c` `g_uart_devs[]` table
+  registers `/dev/ttySN` in fixed peripheral-index order (`[0]=USART1
+  ... [2]=USART3(console) ... [6]=UART7`, with
+  `CONFIG_STM32H7_SERIAL_DISABLE_REORDERING=y` set and all 8 ports
+  populated with no gaps, so index order is the actual order); (b)
+  independently corroborated via `boards/px4/fmu-v6x/src/board_config.h`
+  (`PX4IO_SERIAL_DEVICE "/dev/ttyS5"` tied explicitly to `USART6`,
+  validating the same index arithmetic) and
+  `boards/px4/fmu-v6x/default.px4board`
+  (`CONFIG_BOARD_SERIAL_TEL1="/dev/ttyS6"`, confirming ttyS6 is
+  labeled TELEM1).
+- fmu-v6x's `nuttx-config/nsh/defconfig` sets `CONFIG_UART7_RXDMA=y`/
+  `CONFIG_UART7_TXDMA=y`.
+- fmu-v6x's own `nuttx-config/include/board_dma_map.h` routes UART7's
+  RX/TX DMA onto **DMA2** (`DMAMAP_UART7_RX/TX = DMAMAP_DMA12_UART7RX/
+  TX_1`, in the file's own "DMAMUX2 Using ... DMA2" section, the same
+  group as `DMAMAP_USART3_RX/TX`) — the exact same DMA2 controller
+  instance spec 003 already proved Renode's `DMA.STM32DMA` model never
+  signals transfer-complete on.
+
+So once MAVLink actually transmits on TELEM1 (which happens slightly
+later in boot than the UDP/ethernet MAVLink instance, hence the delay
+before the freeze), it hits the identical infinite-retransmit hang
+already root-caused for the console in spec 003 — and because the
+hang is a tight, never-yielding busy-wait, it starves task scheduling
+for the whole system, not just that one UART, which is why NSH itself
+appeared frozen too.
+
+**Fixed** the same way as the console: a fourth patch
+(`0004-boards-px4-fmu-v6x-disable-UART7-TELEM1-DMA-for-Renode.patch`)
+disables `CONFIG_UART7_RXDMA`/`TXDMA`, forcing interrupt-driven I/O
+for TELEM1. Carried only by `px4-firmware-renode`; the real hardware
+`px4-firmware` recipe is unaffected. **Verified directly**: rebuilt,
+booted the same way as before, and confirmed the console now keeps
+producing output and responding to typed commands well past the
+`mode: Normal, data rate: 1200 B/s on /dev/ttyS6 @ 57600B` line — sent
+`ver all` interactively after that point and got the full expected
+response followed by a fresh `nsh>` prompt, where the unpatched build
+would have hung forever.
+
 | Item | Decision / evidence |
 |---|---|
 | SIH variant: extends `px4-firmware-renode` or new recipe? | **Extends it** — confirmed workable, one additional patch, no need for a separate recipe. |
+| UART7 (TELEM1) DMA hang | **Real gap found and fixed** — see above. Same Renode DMA2 model bug as spec 003's console hang, recurring on a second DMA2-routed UART; fixed the same way (patch 0004 disables `CONFIG_UART7_RXDMA`/`TXDMA`). |
 | MAVLink bridge transport: Ethernet or UART? | _tbd — not yet attempted_ |
 | Host MAVLink tooling: OE recipe or host prerequisite? | _tbd — not yet attempted_ |
 | Timer/virtual-time fidelity under SIH | _tbd — SIH itself runs and produces correct physics; whether it holds up through a full arm→takeoff→land sequence is not yet tested_ |
