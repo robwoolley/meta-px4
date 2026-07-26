@@ -279,6 +279,50 @@ far, or (b) documenting this as a known, real M3 blocker and revisiting
 with fresh eyes/tools later rather than continuing to guess at
 register-level fixes with diminishing returns.
 
+**Follow-up: got the interactive session working, with a major
+correction to the diagnosis above.** Renode's `-P <port>` flag runs
+the monitor on a plain TCP socket instead of `-e` batch mode; a small
+Python client (raw `socket`, not `telnetlib`) against it *does*
+surface query-command output, unlike headless `-e` batch mode.
+
+- Read `g_system_timer` (NuttX's tick counter) directly via `sysbus
+  ReadDoubleWord 0x24008258` and compared it against Renode's own
+  `machine ElapsedVirtualTime`: **6670 ticks vs. 6.672162230s
+  elapsed — an exact match** (`CONFIG_USEC_PER_TICK=1000`, so 6670
+  ticks *should* be 6.670s; matches to within 2ms). **This proves the
+  SysTick/scheduler tick mechanism is genuinely correct** — the
+  global tick counter advances in exact lockstep with Renode's own
+  notion of virtual time. The earlier "2600x speedup" framing was a
+  misreading of the evidence: the *global* clock is not broken.
+- Tested the obvious follow-up hypothesis directly: maybe the boot
+  isn't stuck at all, just slow, because of the sheer log volume from
+  unrelated unmodeled DMA/NVIC sub-registers (each `Unhandled write`
+  warning costs real wall-clock time to log, and there are many per
+  virtual millisecond). Let a live instance run for several real
+  minutes via the interactive session and watched both the `usart3`
+  console and `ElapsedVirtualTime`. **Refuted**: over the full
+  observation window the "failed to initialize mtd driver" message
+  count grew linearly to over 1.12 million, virtual time crept from
+  ~6.3s to only ~13s (getting *slower* in real-time terms as the log
+  grew, not faster), and **every single occurrence showed the exact
+  same `+3.78µs` virtual-time delta from the previous one, unchanged
+  throughout** — this is not converging on eventually completing a
+  bounded ~300ms give-up sequence at any real-time timescale worth
+  waiting for.
+- **Refined conclusion**: the global scheduler tick is correct, but
+  whatever specific code path prints "failed to initialize mtd
+  driver" is not experiencing genuine 10ms `usleep()` delays between
+  attempts — each iteration costs only ~3.78µs of *virtual* time, far
+  less than even one 1ms tick. This means the earlier hypothesis
+  (something in this specific call chain isn't blocking on ticks
+  properly) still stands; what's newly ruled out is any explanation
+  resting on the *global* clock/scheduler being broken, or on the
+  simulation merely being "slow but working." The exact code path
+  responsible (confirmed not `ramtron_attach`'s own bounded 30-attempt
+  loop by itself, since that alone cannot explain million-plus
+  repeats of the single terminal error message) has not yet been
+  located.
+
 ## 6. Implementation record
 
 | Item | Decision / evidence |
