@@ -171,9 +171,9 @@ display to render into *and* has actual keyboard focus (click into it
 first) — in practice, over SSH, in a tiling window manager, or in any
 setup without a full desktop session, it either doesn't grab focus or
 doesn't appear at all, even though the text keeps rendering. The
-`CreateServerSocketTerminal`/`telnet` combination above works
-regardless of GUI/focus state and is the reliable way to actually type
-into the shell.
+`CreateServerSocketTerminal`/`nc` combination above works regardless
+of GUI/focus state and is the reliable way to actually type into the
+shell.
 
 Useful things to try once you have a shell:
 
@@ -198,15 +198,56 @@ nsh> commander check           # preflight/arming check summary
 ```
 
 **Known open issue** (see `specs/004-sih-renode-mavlink.md` §6): SIH
-itself runs correctly and produces physically sensible sensor data,
-but `commander check` currently reports `Preflight check: FAILED`
-("No valid data from Accel/Baro/Gyro/Compass") despite the sensor data
-being demonstrably valid moments before and after. Arming does not yet
-work end-to-end. MAVLink reachability from the host (over Ethernet or
-UART) has also not yet been verified — see that spec for the current
-status of both.
+publishes one valid, correctly-flagged simulated sample at startup,
+but does **not** keep running — re-querying `listener sensor_accel -n
+1` later returns the exact same timestamp every time. This traces to a
+real, severe Renode gap: PX4's work-queue scheduling (which SIH and
+most flight-control modules run on) never advances past its first
+tick under Renode, a hardware-timer fidelity gap in Renode's
+`Timers.STM32_Timer` model (fmu-v6x's `HRT_TIMER` is TIM8), not
+something fixable via PX4/NuttX config. As a result `commander check`
+always reports `Preflight check: FAILED` and arming does not work —
+this is currently unresolved (fixing it for real means either patching
+Renode's own timer model or finding a differently-modeled timer
+peripheral to repoint HRT at; neither has been attempted).
 
-## 6. Troubleshooting
+## 6. Connecting MAVLink from the host
+
+MAVLink starts automatically at boot on two transports — UDP (visible
+in the console log as `Starting MAVLink on ethernet`, port 14550) and
+the TELEM1 UART (`Starting MAVLink on /dev/ttyS6`). Bridging out over
+Renode's modeled Ethernet MAC needs a host TAP interface
+(`emulation CreateTap`), which needs `CAP_NET_ADMIN` to bring up even
+though `/dev/net/tun` itself may be world-writable — treat that as a
+real host-networking change and don't do it without deciding you want
+it. The UART path needs no extra host privileges at all: it's the
+exact same `CreateServerSocketTerminal` mechanism from §4.2, just
+connected to `uart7` instead of `usart3`.
+
+At the `(monitor)` prompt, in addition to the console bridge from §4.2:
+
+```
+emulation CreateServerSocketTerminal 3457 "telem1"
+connector Connect sysbus.uart7 telem1
+```
+
+Then from the host, any real MAVLink client can connect over that
+socket as if it were a TCP-attached telemetry radio — for example with
+`pymavlink`:
+
+```python
+from pymavlink import mavutil
+m = mavutil.mavlink_connection('tcp:127.0.0.1:3457')
+print(m.wait_heartbeat(timeout=30))
+```
+
+This receives a genuine, correctly-parsed `HEARTBEAT` message
+(`type: 2` = quadrotor, `autopilot: 12` = PX4) — real protocol-level
+reachability, not just the boot log's `Starting MAVLink...` text. No
+`mavlink-router` or other intermediate hop is needed; MAVSDK-family
+tooling can connect the same way.
+
+## 7. Troubleshooting
 
 - **`renode-test` fails with `No module named 'psutil'` (or similar)**
   — the venv from §2.2 isn't activated, or wasn't created against the
