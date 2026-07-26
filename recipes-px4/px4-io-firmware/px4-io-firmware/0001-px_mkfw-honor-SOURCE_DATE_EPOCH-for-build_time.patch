@@ -1,0 +1,38 @@
+From 1b307866dc9aba7df181c5d5578820878889af58 Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Sun, 26 Jul 2026 08:32:18 -0400
+Subject: [PATCH] px_mkfw: honor SOURCE_DATE_EPOCH for build_time
+
+Enables reproducible .px4 packaging under build systems (e.g. Yocto/
+OpenEmbedded) that export SOURCE_DATE_EPOCH; falls back to
+time.time() unchanged when unset, so behavior outside such build
+systems is identical to before.
+
+Upstream-Status: Pending
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ Tools/px_mkfw.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/Tools/px_mkfw.py b/Tools/px_mkfw.py
+index f31d2a8972..fd85b1ffad 100755
+--- a/Tools/px_mkfw.py
++++ b/Tools/px_mkfw.py
+@@ -43,6 +43,7 @@ import argparse
+ import json
+ import base64
+ import zlib
++import os
+ import time
+ import subprocess
+ 
+@@ -86,7 +87,7 @@ if args.prototype != None:
+ else:
+ 	desc = mkdesc()
+ 
+-desc['build_time'] 		= int(time.time())
++desc['build_time'] 		= int(os.environ.get('SOURCE_DATE_EPOCH', time.time()))
+ 
+ if args.board_id != None:
+ 	desc['board_id']	= int(args.board_id)
