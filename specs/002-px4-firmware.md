@@ -1,8 +1,10 @@
 # Spec 002 (M2): Offline PX4 NuttX firmware recipes
 
-- **Status:** In progress — `px4-firmware` builds successfully and
-  deploys `.elf`/`.px4` to `DEPLOY_DIR_IMAGE` (§7);
-  `px4-io-firmware`/`px4-bootloader`/reproducibility remain
+- **Status:** In progress — `px4-firmware` builds successfully,
+  deploys `.elf`/`.px4` to `DEPLOY_DIR_IMAGE`, builds fully offline
+  under `BB_NO_NETWORK=1`, and produces byte-identical artifacts
+  across independent clean rebuilds (§7); only
+  `px4-io-firmware`/`px4-bootloader` (AC-5) remain
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md),
   [001-machine-pixhawk-6x.md](001-machine-pixhawk-6x.md) (M1 must have
@@ -227,10 +229,12 @@ back to (b) only if it proves impractical.
 ## 6. Acceptance criteria
 
 - **AC-1** — **Done.** `bitbake mc:pixhawk6x:px4-firmware` succeeds:
-  2011/2011 tasks, zero errors (REQ-2, REQ-8). Not yet re-tested with
-  `BB_NO_NETWORK=1` explicitly set (the microcdr mirror redirect in
-  §7 makes this the expected outcome, but "expected" isn't "verified"
-  — do that pass before calling REQ-2 fully closed).
+  2011/2011 tasks, zero errors (REQ-2, REQ-8). Re-verified with
+  `BB_NO_NETWORK=1` explicitly set after a `cleansstate` (forcing
+  `do_fetch`/`do_unpack`/`do_compile` to genuinely re-run against only
+  cached sources): all tasks succeeded, confirming the microcdr mirror
+  redirect and every other source are truly network-independent once
+  fetched. REQ-2 fully closed.
 - **AC-2** — **Done.** `px4-firmware_1.17.0.bb` now `inherit`s `deploy`
   with a `do_deploy` task (`addtask deploy after do_compile before
   do_build`) that installs
@@ -244,8 +248,17 @@ back to (b) only if it proves impractical.
   what preserved the artifact. Re-ran `arm-none-eabi-readelf -A` on
   the deployed copy: `Tag_CPU_name: "7E-M"`, `Tag_FP_arch: FPv5/FP-D16`
   — still the correct target chip attributes.
-- **AC-3** — Two clean builds produce byte-identical artifacts
-  (REQ-7) — not yet tested.
+- **AC-3** — **Done.** Two clean builds produce byte-identical
+  artifacts (REQ-7). Three independent `cleansstate` rebuilds showed
+  the `.elf` was already byte-identical every time
+  (`c359018bcbeb958f06c345a5d30e5a53`), but the `.px4` wrapper wasn't
+  — traced to `Tools/px_mkfw.py` hardcoding
+  `build_time = int(time.time())` with no override. Fixed with patch
+  0001 (§7): honor `SOURCE_DATE_EPOCH` (which OE already computes per
+  recipe and exports to all tasks), falling back to `time.time()`
+  unchanged when unset. Re-verified with two more independent
+  `cleansstate` rebuilds after the patch: both `.elf` and `.px4`
+  hashes matched exactly across runs.
 - **AC-4** — **Done.** §2's CDRSTREAM question is answered with cited
   Kconfig evidence: OFF for `px4_fmu-v6x_default`
   (`MODULES_ZENOH` is the only selector and it's unset).
@@ -289,12 +302,43 @@ static review):
    sandboxed task is the real build user's home directory, not
    isolated.
 
+**Follow-up work landed 2026-07-26**, prompted by enabling
+`INHERIT += "rm_work"` locally to reclaim disk space (which would
+have silently discarded every finished firmware image, since PX4's
+build has no install step):
+
+4. **Deploy wiring (REQ-6)** — added `inherit deploy` and a
+   `do_deploy` task to `px4-firmware_1.17.0.bb`, ordered `after
+   do_compile before do_build` (same convention `kernel.bbclass` uses
+   for `zImage`) so it runs ahead of `rm_work`'s cleanup. Verified
+   against a real `rm_work`-enabled rebuild: the deployed `.elf`
+   survived in `DEPLOY_DIR_IMAGE` (identical size/`readelf -A`
+   attributes) while `${WORKDIR}` was reduced to just `temp/`.
+5. **Offline build (REQ-2/REQ-8)** — after a `cleansstate`, rebuilt
+   with `BB_NO_NETWORK=1` explicitly set. All 2717 tasks succeeded,
+   confirming every source (including the microcdr mirror redirect)
+   is genuinely cached and network-independent.
+6. **Reproducibility (REQ-7)** — three independent `cleansstate`
+   rebuilds showed the `.elf` was already byte-identical every time,
+   but the `.px4` wrapper wasn't. Root-caused (without touching any
+   unrelated project checkout) by inspecting `Tools/px_mkfw.py` in the
+   already-fetched git mirror under the downloads cache:
+   `desc['build_time'] = int(time.time())`, with no override
+   mechanism. Added patch
+   `0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch`
+   (generated with `git format-patch` against the pinned SRCREV, not
+   hand-edited) so it uses `SOURCE_DATE_EPOCH` when set — which OE
+   already computes per recipe via `do_deploy_source_date_epoch` and
+   exports to all tasks — falling back to `time.time()` unchanged
+   otherwise. Two more independent `cleansstate` rebuilds after the
+   patch produced identical `.elf` and `.px4` hashes both times.
+
 | Item | Decision / evidence |
 |---|---|
 | CDRSTREAM status for fmu-v6x (§2) | **OFF** — only `MODULES_ZENOH` selects `LIB_CDRSTREAM`, and it's unset for `px4_fmu-v6x_default`. `PX4_BUILD_IDLC=OFF` not needed. Verified via kconfiglib `defconfig.py` run against the real `Kconfig` tree with `cmake/kconfig.cmake`'s exact env vars, cross-checked against known-true `CONFIG_MODULES_UXRCE_DDS_CLIENT=y`. |
 | UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS | **Deliberately not set** (maintainer decision, §5.2) — PX4 builds `microcdr`/`microxrceddsclient` itself via its own nested build; the resulting network fetch is redirected to a local mirror (see numbered list above) rather than solved via prebuilt system libs. |
-| Which of patches 0001-0003 apply to px4-firmware | **0001: omitted** (confirmed necessary by reading the patch + `cmake.bbclass` source, §5.2). **0002/0003: not carried** (UXRCE system-libs scoped out, row above). The build succeeded without any of the three, so none are currently needed — revisit only if a real failure demands one. |
+| Which of px4-autopilot's patches 0001-0003 apply to px4-firmware | **0001: omitted** (confirmed necessary by reading the patch + `cmake.bbclass` source, §5.2). **0002/0003: not carried** (UXRCE system-libs scoped out, row above). The build succeeded without any of the three, so none are currently needed — revisit only if a real failure demands one. Note: px4-firmware has since gained its *own*, unrelated "0001" patch (`0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch`, row below) — the numbering is per-recipe and coincidental. |
 | px4io multiconfig vs. nested-build decision (§5.4) | _tbd — not yet started_ |
-| Byte-reproducibility confirmed | _tbd_ |
+| Byte-reproducibility confirmed | **Done (REQ-7)** — `.elf` was always reproducible; `.px4` needed `0001-px_mkfw-honor-SOURCE_DATE_EPOCH-for-build_time.patch` (see implementation record above). Confirmed with two independent `cleansstate` rebuilds post-patch: identical `.elf`/`.px4` hashes both times. |
 | Toolchain gap vs. M1 findings (§5.3) | **None found** — `gcc-arm-none-eabi-native` (spec 001 §6) plus the unpatched kconfig force-override was sufficient; no additional toolchain work was needed beyond the three bugs above. |
 | REQ-6 deploy wiring | **Done** — `px4-firmware_1.17.0.bb` inherits `deploy`; `do_deploy` (ordered `after do_compile before do_build`) installs `px4-firmware-${PV}-${MACHINE}.{elf,px4}` into `DEPLOY_DIR_IMAGE`. Verified against a real `rm_work`-enabled rebuild: the deployed `.elf` survived (47,702,264 bytes, same target attributes via `readelf -A`) while `rm_work` reduced `${WORKDIR}` to just `temp/` — the deploy task is what preserved it, not incidental leftover state. |
