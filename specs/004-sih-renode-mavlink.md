@@ -1,17 +1,20 @@
 # Spec 004 (M4): SIH-in-Renode simulation + MAVLink bridge
 
-- **Status:** In progress — REQ-1/REQ-2 implemented and largely
-  verified (§6): SIH is enabled and genuinely running in Renode with
-  correct physics and correctly-flagged simulated sensor data. A
-  second real Renode DMA-model gap (UART7/TELEM1, the same class of
-  bug as spec 003's console DMA hang) was found and fixed along the
-  way — see §6. One real, unresolved discrepancy blocks arming:
-  `commander check` reports "Preflight check: FAILED" and
-  `health_and_arming_checks` reports "No valid data from
-  Accel/Gyro/Baro/Compass" even though a direct `listener
-  sensor_accel` query moments earlier showed fresh, physically-correct
-  data (`z: -9.81024`, i.e. exactly gravity, `device_id` tagged
-  `SIMULATION:1`). REQ-3 through REQ-6 not yet started.
+- **Status:** In progress, real blocker found. REQ-1/REQ-2's firmware
+  builds and boots (§6), and a second real Renode DMA-model gap
+  (UART7/TELEM1, the same class of bug as spec 003's console DMA hang)
+  was found and fixed along the way. But SIH is **not** genuinely
+  running a continuous simulation as first believed — root-caused
+  (§6) to a severe, system-wide gap: every PX4 work-queue thread
+  (which most flight-control modules, SIH included, depend on for
+  periodic execution via `hrt_call_every`) is confirmed via `top once`
+  to sit at 0ms CPU time / `w:sem` state for the entire uptime — none
+  of them run past their first tick. This is a Renode hardware-timer
+  fidelity gap (`Timers.STM32_Timer`, fmu-v6x's `HRT_TIMER`=TIM8), not
+  an arming-check or SIH-specific bug, and is unresolved: fixing it
+  for real likely means either patching Renode's own timer model or
+  finding a better-modeled timer peripheral to repoint HRT at, neither
+  attempted yet. REQ-3 through REQ-6 not yet started.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md) (G4, R2),
   [003-renode-boot.md](003-renode-boot.md) (Done: PX4 boots to a live
@@ -199,45 +202,69 @@ bus". Rebuild succeeded. One expected, harmless side effect: the
 `ERROR [param] Parameter UAVCAN_ENABLE not found` (the parameter no
 longer exists since `UAVCAN` was removed) — cosmetic, not a failure.
 
-**Verified SIH is genuinely running, with real physics and real
-simulated sensor data** — via the interactive Renode session
-technique proven in spec 003 (raw `usart3 WriteChar` monitor commands
-turned out not to inject RX data the way assumed; switched to
-reusing the already-proven `renode-test`/`Write Line To Uart`
-mechanism instead, forcing a deliberate assertion failure to capture
-the full console dump, the same technique that recovered the real
-`uorb status` output in spec 003):
-- `simulator_sih status` printed live physics state: vehicle type
-  "Quadcopter", landed state, local position/velocity (NED),
-  attitude (roll/pitch/yaw), angular acceleration, actuator signals,
-  aerodynamic forces/moments — all populated with physically sensible
-  resting-on-ground values, not zeros-because-uninitialized or stale
-  data.
-- `listener sensor_accel -n 1` showed a fresh sample (`timestamp: ...
-  1.334135 seconds ago`) with `device_id` explicitly flagged
-  `SIMULATION:1`, and `z: -9.81024` — exactly Earth gravity for a
-  stationary vehicle. This is real, correct, actively-updating
-  simulated sensor data, not a stub.
+**Initial (incomplete) verification — superseded below.** A first pass
+via the interactive Renode session technique proven in spec 003 (raw
+`usart3 WriteChar` monitor commands turned out not to inject RX data
+the way assumed; switched to reusing the already-proven
+`renode-test`/`Write Line To Uart` mechanism instead) showed
+`simulator_sih status` printing plausible physics state and `listener
+sensor_accel -n 1` showing a sample tagged `SIMULATION:1` with `z:
+-9.81024` (exactly Earth gravity). This was read as "genuinely
+running, real, actively-updating simulated sensor data" — but that
+conclusion was wrong: it was a single point-in-time snapshot, and
+nothing at the time re-queried the same topic later to check whether
+the value was actually still updating.
 
-**Open discrepancy, not yet resolved:** despite the above, `commander
-check` reports `Preflight check: FAILED`, and
-`health_and_arming_checks` repeatedly logs `Preflight Fail: No valid
-data from Accel/Baro/Gyro/Compass 0` — both immediately after the
-`listener` query above and several seconds later, so this isn't
-simply "hadn't started yet." Traced the exact check condition in
-`src/modules/commander/HealthAndArmingChecks/checks/
-accelerometerCheck.cpp`: `is_valid = _sensor_accel_sub[instance]
-.copy(&accel_data) && (accel_data.device_id != 0) &&
-(accel_data.timestamp != 0)`, a `SubscriptionMultiArray` on the same
-raw `ORB_ID::sensor_accel` topic the `listener` command reads — not a
-calibration issue (that's a separate `is_calibration_valid` check,
-which would produce a different log message). Root cause not yet
-found: possibly the check's own subscription only samples
-periodically and happens to catch a gap between SIH publish cycles,
-or something more specific to `advertised()` state — needs further,
-more targeted tracing (e.g. watching the check's own periodic
-evaluation across several cycles) rather than a single point-in-time
-`listener` snapshot.
+**Corrected finding, root-caused with hard evidence:** SIH's sensor
+data is **not** actively updating. Querying `listener sensor_accel -n
+1` four times over ~8 real seconds (via the `SIMULATION.md`
+`CreateServerSocketTerminal`/`nc` workflow) returned the exact same
+`timestamp: 7077681` every time, while the reported age climbed in
+lockstep with real time (9.415s → 10.307s → 13.824s → 17.519s ago).
+`sensor_accel` was published **exactly once**, near boot, and never
+again — not a subscription/instance mismatch and not a calibration
+issue. (This also means the original `accelerometerCheck.cpp`
+condition quoted above was incomplete: the real check is `is_valid =
+... .copy(&accel_data) && (accel_data.device_id != 0) &&
+(accel_data.timestamp != 0) && (hrt_elapsed_time(&accel_data.timestamp)
+< 1_s)` — a genuinely stale, once-published sample fails this
+honestly, exactly as designed.)
+
+Since the growing "seconds ago" figure is itself computed from
+`hrt_absolute_time()`, that free-running clock is clearly still
+advancing correctly — ruling out a fully frozen HRT peripheral. The
+break is specifically in **periodic callback delivery**. Confirmed via
+NuttX's `top once`: every PX4 work-queue thread —
+`wq:manager`/`wq:lp_default`/`wq:hp_default`/`wq:nav_and_controllers`/
+`wq:rate_ctrl`/`wq:INS0` — plus the `sih` task itself, showed **`w:sem`
+state and exactly 0ms of accumulated CPU time across the full 16.8s
+of uptime measured**. None of them has run even once since initial
+registration. This is not SIH-specific: it is PX4's entire work-queue
+scheduling mechanism (`ScheduleOnInterval`/`hrt_call_every`, backed by
+fmu-v6x's `HRT_TIMER` = **TIM8**, per `board_config.h`) failing to
+redeliver its periodic capture-compare interrupt under Renode's
+`Timers.STM32_Timer` model, after presumably firing once during each
+module's initial setup. (A handful of standalone tasks not built on
+the work-queue mechanism — `ekf2`, `commander`, the `mavlink_*` tasks —
+showed nonzero but still very small CPU time, consistent with
+one-time startup work rather than genuine ongoing cycles.)
+
+This reframes the M4 blocker entirely: it isn't an arming-check quirk
+or a SIH-specific gap, it's a Renode hardware-timer fidelity gap in
+the peripheral class used for *all* PX4 periodic module scheduling —
+precisely the risk spec 000 R2 flagged for M4, just more severe than
+"SIH's physics integration might drift": nothing scheduled through a
+work queue advances past its first tick at all. Fixing this for real
+would mean either patching Renode's own `Timers.STM32_Timer` C# model
+(a change to Renode itself, well outside this OE layer's scope as
+built so far) or empirically finding a different timer peripheral
+Renode models more completely and repointing fmu-v6x's `HRT_TIMER` at
+it for the Renode-only variant (unverified whether any other modeled
+STM32H7 timer instance behaves differently, since `Timers.STM32_Timer`
+is a single shared model class). Not yet attempted either way — this
+is being surfaced as a real, evidenced blocker rather than a guessed
+fix, matching this project's own established practice of not
+patching around a problem before its root cause is understood.
 
 **Second real Renode DMA-model gap found and fixed: UART7 (TELEM1),
 the same class of bug as spec 003's console DMA hang.** Discovered
@@ -298,9 +325,9 @@ would have hung forever.
 | UART7 (TELEM1) DMA hang | **Real gap found and fixed** — see above. Same Renode DMA2 model bug as spec 003's console hang, recurring on a second DMA2-routed UART; fixed the same way (patch 0004 disables `CONFIG_UART7_RXDMA`/`TXDMA`). |
 | MAVLink bridge transport: Ethernet or UART? | _tbd — not yet attempted_ |
 | Host MAVLink tooling: OE recipe or host prerequisite? | _tbd — not yet attempted_ |
-| Timer/virtual-time fidelity under SIH | _tbd — SIH itself runs and produces correct physics; whether it holds up through a full arm→takeoff→land sequence is not yet tested_ |
+| Timer/virtual-time fidelity under SIH | **Real, severe gap found (REQ-6's answer, found early).** Not "drift" — PX4's work-queue scheduling (SIH included) never advances past its first tick under Renode at all. See "Corrected finding" above. |
 | FLASH budget for the SIH variant | **Real constraint hit and fixed** — see above. Removing real-hardware drivers redundant with SIH's simulated backends was necessary, not optional. |
-| Arming blocked by a real, unresolved sensor-validity discrepancy | **Yes** — see "Open discrepancy" above. This is the current blocker for REQ-5 (scripted arm→takeoff→land). |
+| Arming blocked by a real, unresolved sensor-validity discrepancy | **Yes, root-caused** — not an arming-check bug: `sensor_accel` genuinely stops updating after one publish because the work-queue thread that would republish it never runs again (see "Corrected finding" above). This is the current blocker for REQ-5 (scripted arm→takeoff→land), and it's a Renode timer-model gap, not something fixable purely in PX4/NuttX config. |
 
 ## 7. Acceptance criteria
 
