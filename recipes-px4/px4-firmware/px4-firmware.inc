@@ -57,3 +57,14 @@ INHIBIT_DEFAULT_DEPS = "1"
 inherit cmake python3native pkgconfig
 
 export GIT_SUBMODULES_ARE_EVIL = "1"
+
+# NuttX's own build compiles several host-side build-time tools (incdir,
+# mkdeps, cmpconfig, ...) from platforms/nuttx/NuttX/nuttx/tools/*.c using
+# $(HOSTCC) -- a NATIVE compiler, entirely separate from the arm-none-eabi
+# cross-compiler used for target code. tools/Config.mk defaults
+# `HOSTCC ?= cc`, but bare "cc" (unlike "gcc") is not in oe-core's
+# HOSTTOOLS allowlist, so it's absent from PATH in this sandboxed build --
+# confirmed by reproducing: `make[1]: *** [Makefile.host:203: incdir]
+# Error 127`. `?=` means an inherited environment variable wins, so
+# exporting HOSTCC here (to something HOSTTOOLS does provide) fixes it.
+export HOSTCC = "gcc"
