@@ -52,16 +52,30 @@ Checked directly in
   flag (or its NuttX-config equivalent) is actually wired before
   declaring the recipe done, don't assume the posix fix's lesson
   transfers automatically.
-- **`CONFIG_LIB_CDRSTREAM` status is NOT yet confirmed for fmu-v6x** —
-  a plain `grep` of `default.px4board` found no direct reference
-  (unlike `CONFIG_MODULES_UXRCE_DDS_CLIENT`, which appears literally).
-  This does not prove it's off: `.px4board` files only list deltas
-  from Kconfig defaults, and CDRSTREAM may be pulled in transitively
-  by the UXRCE-DDS client's Kconfig `select`. **This must be resolved
-  by an actual `menuconfig`/Kconfig evaluation, not another grep**,
-  before deciding whether `px4-firmware` needs
-  `-DPX4_BUILD_IDLC=OFF` the way `px4-autopilot` (posix) confirmed it
-  did not.
+- **`CONFIG_LIB_CDRSTREAM` is OFF for fmu-v6x — resolved by an actual
+  Kconfig evaluation, not a grep.** Downloaded the ARM GNU Toolchain
+  15.2.Rel1 (user-space tarball, no root needed) and used the
+  already-built `python3-kconfiglib-native` module from the `sitl`
+  bitbake environment to run kconfiglib's own `defconfig.py` directly
+  against `Kconfig` with the same environment variables
+  `cmake/kconfig.cmake` sets for a `LABEL=default` build
+  (`PLATFORM=nuttx VENDOR=px4 MODEL=fmu-v6x LABEL=default
+  TOOLCHAIN=arm-none-eabi ARCHITECTURE=cortex-m7`). Sanity-checked the
+  reconstruction against known-true values before trusting it: the
+  resolved output correctly reproduced `CONFIG_MODULES_UXRCE_DDS_CLIENT=y`
+  and echoed `CONFIG_BOARD_TOOLCHAIN`/`CONFIG_BOARD_ARCHITECTURE`
+  correctly. `LIB_CDRSTREAM` (`src/lib/cdrstream/Kconfig`) has no
+  prompt — it's `select`-only — and grepping every Kconfig file in
+  the tree, the *only* symbol that ever selects it is
+  `MODULES_ZENOH` (`src/modules/zenoh/Kconfig`), not
+  `UXRCE_DDS_CLIENT`. The resolved fmu-v6x config has
+  `# CONFIG_MODULES_ZENOH is not set`, so `LIB_CDRSTREAM` resolves to
+  `n`. **`PX4_BUILD_IDLC=OFF` is therefore not needed for
+  `px4-firmware`**, same conclusion as the posix build — REQ-3 is
+  satisfied on this point without needing that flag; patch 0003 may
+  still need to be carried (it only guards a code path CDRSTREAM
+  never reaches here) but doesn't need activating via
+  `EXTRA_OECMAKE`.
 - **Submodule pins at this SRCREV** (`git submodule status` in the
   real tree): NuttX apps
   `e37940d8535f603a16b8f6f21c21edaf584218aa` (nuttx-11.0.0-5-g...),
@@ -181,8 +195,12 @@ back to (b) only if it proves impractical.
   (REQ-6).
 - **AC-3** — Two clean builds produce byte-identical artifacts
   (REQ-7).
-- **AC-4** — §2's CDRSTREAM question is answered with cited evidence
-  (a Kconfig/menuconfig trace, not a grep) and REQ-3 is satisfied.
+- **AC-4** — **Done.** §2's CDRSTREAM question is answered with cited
+  Kconfig evidence: OFF for `px4_fmu-v6x_default`
+  (`MODULES_ZENOH` is the only selector and it's unset).
+  `UXRCE_DDS_CLIENT_USE_SYSTEM_LIBS=ON` remains REQ-3's live
+  requirement — CDRSTREAM being off only rules out needing
+  `PX4_BUILD_IDLC=OFF` alongside it.
 - **AC-5** — `px4-io-firmware` and `px4-bootloader` both build and
   deploy (REQ-4, REQ-5).
 - **AC-6** — Existing `px4-autopilot` (posix) and M1's
@@ -193,7 +211,7 @@ back to (b) only if it proves impractical.
 
 | Item | Decision / evidence |
 |---|---|
-| CDRSTREAM status for fmu-v6x (§2) | _tbd_ |
+| CDRSTREAM status for fmu-v6x (§2) | **OFF** — only `MODULES_ZENOH` selects `LIB_CDRSTREAM`, and it's unset for `px4_fmu-v6x_default`. `PX4_BUILD_IDLC=OFF` not needed. Verified via kconfiglib `defconfig.py` run against the real `Kconfig` tree with `cmake/kconfig.cmake`'s exact env vars, cross-checked against known-true `CONFIG_MODULES_UXRCE_DDS_CLIENT=y`. |
 | Which of patches 0001-0003 apply to px4-firmware | _tbd_ |
 | px4io multiconfig vs. nested-build decision (§5.4) | _tbd_ |
 | Byte-reproducibility confirmed | _tbd_ |
