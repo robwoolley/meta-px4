@@ -1,18 +1,35 @@
 # PX4 Autopilot
 
-An OpenEmbedded/Yocto layer providing recipes for 
-OpenEmbedded recipes for building [PX4/PX4-Autopilot](https://github.com/PX4/PX4-Autopilot).
+An OpenEmbedded/Yocto layer providing recipes for building
+[PX4/PX4-Autopilot](https://github.com/PX4/PX4-Autopilot), covering
+two distinct configurations:
+
+- **PX4 posix/SITL** — the flight stack cross-compiled for a Linux
+  target (`px4-autopilot`), the normal companion-computer/simulation
+  build.
+- **Pixhawk 6X NuttX firmware** — the real bare-metal flight
+  controller firmware (`px4-firmware`, plus `px4-firmware-renode`,
+  `px4-bootloader`, `px4-io-firmware`) cross-compiled for the
+  STM32H753 (Cortex-M7) FMU and its STM32F100 (Cortex-M3) PX4IO
+  coprocessor — no Linux involved on the target at all.
 
 ## Layout
 
 | Recipe | Purpose |
 |---|---|
-| `px4-autopilot` | The flight stack, built with `cmake.bbclass` against PX4's top-level CMakeLists (`-DCONFIG=${PX4_CONFIG}`). |
+| `px4-autopilot` | The posix/SITL flight stack, built with `cmake.bbclass` against PX4's top-level CMakeLists (`-DCONFIG=${PX4_CONFIG}`). |
 | `microcdr` | eProsima Micro CDR, normally cloned from GitHub *at compile time* by the Micro-XRCE-DDS-Client SuperBuild. |
 | `microxrceddsclient` | eProsima Micro XRCE-DDS Client (PX4 fork), normally built by PX4 as a nested `ExternalProject_Add`. |
 | `cyclonedds-px4-native` | Host `idlc` with the `cdrstream-desc` feature, normally bootstrapped by PX4 at configure time with a hardcoded `/usr/bin/gcc`. |
+| `px4-firmware` | The real-hardware Pixhawk 6X FMU firmware (`px4_fmu-v6x_default`), NuttX/bare-metal, Cortex-M7. |
+| `px4-firmware-renode` | Same firmware, Renode-only variant (console/TELEM1 DMA disabled to work around Renode timer-model gaps; optionally SIH-enabled) — see [SIMULATION.md](SIMULATION.md). |
+| `px4-bootloader` | The Pixhawk 6X FMU's bootloader (`px4_fmu-v6x_bootloader`), same Cortex-M7 chip/tune as `px4-firmware`. |
+| `px4-io-firmware` | Firmware for the Pixhawk 6X's PX4IO coprocessor (`px4_io-v2_default`), a separate Cortex-M3/no-FPU chip. |
+| `gcc-arm-none-eabi` | The prebuilt `arm-none-eabi-*` bare-metal GCC toolchain the four recipes above depend on — see "Baremetal ARM toolchain" below. |
 
-## Quick start (with kas, on ELISA Space Grade Linux)
+## Quick start
+
+### PX4 posix/SITL build (Linux, with kas on ELISA Space Grade Linux)
 
 Clone this layer:
 
@@ -29,6 +46,54 @@ kas build layers/meta-px4/kas/px4-sgl-qemuarm64.yml
 
 This builds `core-image-minimal` for `qemuarm64` with `px4-autopilot`
 installed (default board config `px4_sitl_default`, see below).
+
+### Pixhawk 6X NuttX firmware build (bare-metal, STM32H7/STM32F1)
+
+This builds real flight-controller firmware, not a Linux image. Add
+this layer plus `openembedded-core/meta` to `bblayers.conf`, then
+enable the two bare-metal multiconfigs meta-px4 provides (`pixhawk6x`
+for the Cortex-M7 FMU + bootloader, `pixhawk6x-io` for the Cortex-M3
+PX4IO coprocessor — each sets its own `MACHINE`/`TCLIBC`, so your
+primary build's own `MACHINE`/`DISTRO` are untouched):
+
+```
+# conf/local.conf
+BBMULTICONFIG = "pixhawk6x pixhawk6x-io"
+```
+
+```sh
+bitbake mc:pixhawk6x:px4-firmware       # real hardware
+bitbake mc:pixhawk6x:px4-bootloader
+bitbake mc:pixhawk6x-io:px4-io-firmware
+```
+
+No separate host toolchain install is needed — see "Baremetal ARM
+toolchain" below. For the Renode-only variant, running it against
+Renode's STM32H743 model (plain NSH boot or a SIH simulated flight),
+and MAVLink connectivity, see [SIMULATION.md](SIMULATION.md).
+
+## Baremetal ARM toolchain
+
+Everything needed to cross-compile the Pixhawk 6X firmware is carried
+directly in this layer — no external layer or host-installed
+toolchain is required:
+
+- **OE-level machine/tune configuration** (bare-metal `TCLIBC`,
+  Cortex-M7+FPU / Cortex-M3 tunes, flash/RAM layout):
+  `conf/machine/pixhawk-6x.conf` and `conf/machine/pixhawk-6x-io.conf`,
+  plus their shared `.inc` files under `conf/machine/include/` and
+  `conf/machine/include/arm/armv7m/`. `TCLIBC = "baremetal"` itself is
+  set in `conf/multiconfig/pixhawk6x.conf`/`pixhawk6x-io.conf`, not at
+  the machine level, since it depends on which recipe is building.
+- **The actual `arm-none-eabi-*` compiler binaries**:
+  `recipes-devtools/external-arm-toolchain/gcc-arm-none-eabi_15.3.rel1.bb`
+  (vendored from `git.yoctoproject.org/meta-arm`'s
+  `meta-arm-toolchain` layer rather than depending on that whole
+  layer, matching this layer's existing convention of carrying its own
+  devtools recipes). Produces `gcc-arm-none-eabi-native`, a `DEPENDS`
+  of all four NuttX/bare-metal recipes above — PX4's own
+  `Toolchain-arm-none-eabi.cmake` drives the actual compiler flags,
+  this recipe just puts the prebuilt binaries on `PATH`.
 
 ## Carried patches (px4-autopilot)
 
@@ -63,23 +128,17 @@ recipes to PX4's submodule pins (`git submodule status` in the PX4 tree):
   match `src/modules/uxrce_dds_client/CMakeLists.txt` — they change the
   client's config header and ABI.
 
-## Selecting the board
+## Selecting the board (posix/SITL)
 
 `PX4_CONFIG ?= "px4_sitl_default"` — override in a bbappend or your distro
 config with any **posix**-platform config (e.g. `emlid_navio2_default`).
-
-## Running the Pixhawk 6X simulation (Renode)
-
-For the STM32H7/NuttX firmware bring-up (`px4-firmware-renode`) and
-how to boot/run it — either a plain NSH smoke test or a SIH simulated
-flight — against Renode, see [SIMULATION.md](SIMULATION.md).
+The Pixhawk 6X NuttX firmware build has no equivalent variable — its
+board is fixed per recipe (`px4_fmu-v6x_default`, `px4_io-v2_default`,
+etc., set in each recipe's own `EXTRA_OECMAKE`), since each is a
+distinct, non-interchangeable piece of hardware.
 
 ## Known limitations / out of scope
 
-- **NuttX configs**: they spawn nested full PX4 builds (px4io coprocessor
-  firmware, ROMFS UAVCAN peripheral firmware) that this layer does not
-  handle yet — see `specs/000-architecture.md` for the planned
-  STM32H7/Pixhawk 6X firmware support.
 - **Simulators**: the gazebo-classic / gz / jsbsim / flightgear
   ExternalProjects are guarded by `find_package` of the simulator dev libs
   and stay disabled as long as those are not in `DEPENDS`. The nested `gz`
