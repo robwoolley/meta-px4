@@ -246,14 +246,38 @@ with real evidence (not yet root-caused):**
   duration, each time through the retry.
 
 **Where this stands**: the `SysTick` timer interrupt fires correctly,
-but whatever wait NuttX's `usleep()` → `clock_nanosleep()` chain uses
-to actually suspend the calling task until enough ticks have elapsed
-does not appear to be blocking it at all in this configuration. Root
-cause not yet found — the next step would be tracing
-`clock_nanosleep`/the watchdog-based wait/wake mechanism itself
-(deeper NuttX scheduler internals), or interactive debugging (e.g.
-GDB attached to Renode), rather than further `.repl`-level
-register-stub guesses.
+but whatever wait NuttX's `usleep()` → `clock_nanosleep()` →
+`nxsig_nanosleep()` → `nxsig_timedwait()` chain uses to actually
+suspend the calling task until enough ticks have elapsed does not
+appear to be blocking it at all in this configuration. Traced the
+call chain by reading `sched/signal/sig_nanosleep.c` directly: it
+ultimately depends on a signal-wait-with-timeout primitive, not yet
+traced further.
+
+Attempted a direct memory-based diagnostic (read NuttX's tick counter,
+`g_system_timer` at `0x24008258` — found via `arm-none-eabi-nm` on the
+real ELF — before/after a deterministic `emulation RunFor "N"` virtual-
+time advance, to measure the real tick rate independent of console
+log noise) but hit two genuine Renode tooling limitations rather than
+new evidence:
+- A batch of several sequential `RunFor` calls in one `-e` invocation
+  crashed Renode itself with an internal `.NET`
+  `ObjectDisposedException` in `LimitTimer`/`BaseClockSource` — a real
+  Renode-side issue with that usage pattern, not a NuttX bug.
+- A single `RunFor` followed by `sysbus ReadDoubleWord` completed
+  without error, but the read command's *result* never appeared
+  anywhere in the log — Renode's headless `-e` batch mode does not
+  appear to surface monitor query-command output the way an
+  interactive/telnet session would.
+
+**Conclusion for this round**: root cause not yet found. The
+remaining honest options are (a) a genuinely interactive debugging
+session (Renode's telnet monitor and/or GDB attached to it) to read
+`g_system_timer` and step through the wait/wake path directly, which
+is a materially bigger setup than the log-based experiments run so
+far, or (b) documenting this as a known, real M3 blocker and revisiting
+with fresh eyes/tools later rather than continuing to guess at
+register-level fixes with diminishing returns.
 
 ## 6. Implementation record
 
