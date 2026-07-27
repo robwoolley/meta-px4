@@ -253,7 +253,46 @@ reachability, not just the boot log's `Starting MAVLink...` text. No
 `mavlink-router` or other intermediate hop is needed; MAVSDK-family
 tooling can connect the same way.
 
-## 7. Troubleshooting
+## 7. Scripted arm→takeoff→land test
+
+`recipes-renode/pixhawk6x/sih_flight_test.py` automates all of the
+above into a single headless pass/fail check (exit 0/1): it boots
+`px4-firmware-renode` under the **patched** Renode from
+[renode-patches/](renode-patches/), bridges TELEM1 and the console,
+and drives a real `mavsdk`-python client through arm → takeoff → hover
+→ land.
+
+```sh
+pip install mavsdk   # bundles its own mavsdk_server binary
+
+python3 recipes-renode/pixhawk6x/sih_flight_test.py \
+    --renode /path/to/renode-patched \
+    --elf /path/to/px4-firmware-renode-1.17.0-pixhawk-6x.elf
+```
+
+Renode's own log and the NSH console log both get saved (see `--log`/
+`--console-log`) for post-mortem debugging on failure. Notable,
+already-worked-around gotchas if you're modifying this script:
+
+- It does **not** wait on `telemetry.health()`'s
+  `is_global_position_ok`/`is_home_position_ok` before arming — those
+  MAVSDK-derived flags lag far behind PX4's own genuinely-valid
+  internal state on TELEM1's low-bandwidth link and may never catch up
+  within any reasonable timeout. It attempts `arm()` directly (with
+  retries) instead, the same way a plain NSH `commander arm` already
+  works.
+- It raises `MAV_0_RATE` (TELEM1's data rate, 1200 B/s by default —
+  fine for a bare heartbeat but far too slow for MAVSDK's own
+  parameter-sync/telemetry machinery) via a runtime `param set` over
+  the console before connecting MAVSDK.
+- It explicitly stops the `mavsdk_server` subprocess mavsdk-python
+  spawns (`System._stop_mavsdk_server()`) in a `finally` block, since
+  `System.__del__` — which is supposed to do this — isn't reliably
+  called before the interpreter exits; leaked `mavsdk_server`
+  processes from a previous run compete for the same default gRPC port
+  and break the next run in confusing, Renode/PX4-unrelated ways.
+
+## 8. Troubleshooting
 
 - **`renode-test` fails with `No module named 'psutil'` (or similar)**
   — the venv from §2.2 isn't activated, or wasn't created against the

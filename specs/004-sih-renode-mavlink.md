@@ -1,10 +1,9 @@
 # Spec 004 (M4): SIH-in-Renode simulation + MAVLink bridge
 
-- **Status:** REQ-1 through REQ-4 done; REQ-5 (scripted MAVSDK
-  arm→takeoff→land) not yet attempted but no longer blocked. The
-  work-queue/HRT timer gap flagged as a severe, unresolved blocker
-  earlier is now **fixed** — not in PX4/NuttX, but in Renode itself
-  (§6, [renode-patches/](../renode-patches/)): `Timers.STM32_Timer`'s
+- **Status: Done.** All six requirements complete. The work-queue/HRT
+  timer gap flagged as a severe, unresolved blocker earlier is
+  **fixed** — not in PX4/NuttX, but in Renode itself (§6,
+  [renode-patches/](../renode-patches/)): `Timers.STM32_Timer`'s
   capture/compare arming didn't handle a free-running counter wrapping
   around, and separately treated a compare value of exactly 0 as
   "channel disabled" (a valid target on real hardware). Since PX4's
@@ -20,10 +19,15 @@
   `commander check` reports `Preflight check: OK`, and `commander arm`
   genuinely arms the vehicle. REQ-3/REQ-4: a real `pymavlink` client
   observed a genuine heartbeat over a UART-bridged socket (§6), no
-  `mavlink-router` needed. REQ-6's answer (§6) predates the fix and
-  should be read alongside it: the "severe" framing was accurate for
-  the unpatched Renode, resolved by patching Renode rather than by
-  finding a PX4/NuttX-side workaround.
+  `mavlink-router` needed. **REQ-5 done**: a scripted MAVSDK
+  arm→takeoff→land test
+  (`recipes-renode/pixhawk6x/sih_flight_test.py`) passes reliably
+  (verified twice) against the patched Renode — see §6 for the two
+  more real bugs (both in the test harness, not PX4/Renode) found and
+  fixed getting there. REQ-6's original answer (§6) predates the timer
+  fix and should be read alongside it: the "severe" framing was
+  accurate for the unpatched Renode, resolved by patching Renode
+  rather than by finding a PX4/NuttX-side workaround.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md) (G4, R2),
   [003-renode-boot.md](003-renode-boot.md) (Done: PX4 boots to a live
@@ -130,10 +134,12 @@ and assigns the research risk to this milestone, not M3.
   actually needed: MAVSDK can often speak MAVLink directly without
   `mavlink-router` as an intermediate hop, so don't add the hop
   unless a real need for it surfaces.
-- **REQ-5** — A scripted MAVSDK test (arm → takeoff → land) runs
-  against the Renode SIH instance, exit code reflects pass/fail,
-  runs headlessly (matching spec 003 REQ-5's `renode-test`-style CI
-  precedent, even if the actual CI pipeline itself is M6's job).
+- **REQ-5** — **Done.** A scripted MAVSDK test
+  (`recipes-renode/pixhawk6x/sih_flight_test.py`) runs arm → takeoff →
+  land against the Renode SIH instance, exit code reflects pass/fail
+  (0/1), runs headlessly (matching spec 003 REQ-5's `renode-test`-style
+  CI precedent, even if the actual CI pipeline itself is M6's job).
+  Verified passing twice in a row against the timer-patched Renode.
 - **REQ-6** — Document real timer/virtual-time fidelity findings for
   SIH specifically (R2's flagged risk): does the physics integration
   hold up under Renode's virtual-time model well enough for a
@@ -443,6 +449,63 @@ was sufficient with no `mavlink-router` intermediate hop needed,
 confirming the REQ-4 hypothesis that MAVSDK-family tooling can speak
 MAVLink directly.
 
+**REQ-5 done: scripted MAVSDK arm→takeoff→land, passing reliably.**
+With the timer fix in place, wrote
+`recipes-renode/pixhawk6x/sih_flight_test.py`: boots
+`px4-firmware-renode` under the patched Renode
+(`pixhawk6x-sih-flight.resc`, bridging both TELEM1 and the console to
+TCP sockets), drives a real `mavsdk`-python client through arm →
+set-takeoff-altitude → takeoff → wait-for-altitude → hover → land →
+wait-for-landed, and exits 0/1 for pass/fail. Getting a genuinely
+reliable pass required finding and fixing three more real bugs — two
+in the test harness, one a real MAVLink-link configuration gap, none
+of them Renode/PX4 bugs:
+
+1. **MAVSDK's client-side health flags never agree with PX4's own
+   state on this link.** The first attempt gated on
+   `telemetry.health()`'s `is_global_position_ok`/`is_home_position_ok`
+   before arming, matching normal MAVSDK usage — and it timed out
+   every time. Checked PX4's own internal state directly over the
+   console (`listener vehicle_global_position`, `listener
+   home_position`): both were genuinely valid
+   (`lat_lon_valid`/`valid_hpos`/`valid_lpos` all `True`) the whole
+   time. The gap is specifically MAVSDK's own derived flags lagging on
+   TELEM1's low-bandwidth link (below), not a real readiness problem.
+   Fixed by not gating on them at all — attempt `arm()` directly (with
+   retries) and let PX4's own `COMMAND_ACK` be the authority, matching
+   how a plain NSH `commander arm` already works against this same
+   firmware.
+2. **TELEM1 defaults to `MAV_0_RATE` 1200 B/s** (a real-radio-
+   appropriate default baked into the airframe/board config) — fine
+   for a bare heartbeat (REQ-3/REQ-4's own check), but far too slow for
+   MAVSDK's own normal client machinery (parameter sync, telemetry
+   streams): the console log showed `ERROR [parameters] get: param
+   65535 invalid` repeating continuously, consistent with a full
+   parameter sync that never completes. Fixed by raising `MAV_0_RATE`
+   (to 50000 in the test) over the console before connecting MAVSDK —
+   a plain runtime `param set`, no firmware rebuild needed.
+3. **`mavsdk`-python's `System` leaks its spawned `mavsdk_server`
+   subprocess.** `System.__del__` is supposed to stop it, but `__del__`
+   is not reliably called before interpreter exit — confirmed directly
+   by finding three stray `mavsdk_server` processes left behind after
+   three earlier test runs, all competing for the same default gRPC
+   port 50051, breaking subsequent runs in confusing ways (a `tcp://`
+   connection to Renode's socket appearing to reset immediately, an
+   empty exception message) that had nothing to do with Renode or PX4
+   at all. Fixed by explicitly calling the private
+   `drone._stop_mavsdk_server()` in a `finally` block.
+
+Also added a hard overall `asyncio.wait_for` watchdog around the whole
+flight sequence: a single hung MAVSDK call (observed once, on `arm()`)
+can block forever waiting for an ACK that never arrives rather than
+raising, which would make a per-stage timeout check placed *after* an
+`await` never actually run.
+
+**Verified passing twice in a row**, including a first-attempt `arm()`
+timeout that the retry loop recovered from (`arm attempt failed
+(TIMEOUT...), retrying...` → succeeds), takeoff reaching ~4.7-5.4 m
+against a 5 m target, and landing confirmed via `in_air` going `False`.
+
 | Item | Decision / evidence |
 |---|---|
 | SIH variant: extends `px4-firmware-renode` or new recipe? | **Extends it** — confirmed workable, one additional patch, no need for a separate recipe. |
@@ -452,6 +515,7 @@ MAVLink directly.
 | Timer/virtual-time fidelity under SIH | **Real, severe gap found *and fixed*.** Not "drift" — PX4's work-queue scheduling (SIH included) never advanced past its first tick under the plain portable Renode release. Two bugs in `Timers.STM32_Timer`'s capture/compare arming (wraparound-unaware comparison; compare-value-0 wrongly meaning "disabled"); fixed with a Renode source patch ([renode-patches/](../renode-patches/)), verified directly. |
 | FLASH budget for the SIH variant | **Real constraint hit and fixed** — see above. Removing real-hardware drivers redundant with SIH's simulated backends was necessary, not optional. |
 | Arming blocked by a real sensor-validity discrepancy | **Root-caused and fixed** — not an arming-check bug: `sensor_accel` genuinely stopped updating after one publish because the work-queue thread that would republish it never ran again, due to the Renode timer bugs above. With a patched Renode, `commander check` reports `OK` and `commander arm` genuinely arms. No longer a blocker for REQ-5. |
+| Scripted MAVSDK arm→takeoff→land | **Done, verified twice.** `recipes-renode/pixhawk6x/sih_flight_test.py`, exit 0/1. Needed three more fixes to be reliable, none of them Renode/PX4 bugs: don't gate arming on MAVSDK's own health flags (they lag behind PX4's genuinely-valid internal state on this link); raise `MAV_0_RATE` from its 1200 B/s default before connecting MAVSDK; explicitly stop the `mavsdk_server` subprocess mavsdk-python leaks (`System.__del__` isn't reliably called). |
 
 ## 7. Acceptance criteria
 
@@ -464,11 +528,10 @@ MAVLink directly.
   patched build.
 - **AC-2** — **Done.** A real, host-side socket connection observes a
   MAVLink heartbeat from the Renode instance (REQ-3, REQ-4) — see §6.
-- **AC-3** — **Not yet attempted.** Scripted MAVSDK arm→takeoff→land
-  completes successfully against the Renode SIH instance, runnable
-  headlessly with a pass/fail exit code (REQ-5). No longer blocked by
-  AC-1 — this is now genuinely the next real step, not something
-  waiting on a Renode-side fix.
+- **AC-3** — **Done.** Scripted MAVSDK arm→takeoff→land
+  (`recipes-renode/pixhawk6x/sih_flight_test.py`) completes
+  successfully against the Renode SIH instance, runnable headlessly
+  with a pass/fail exit code (REQ-5). Verified passing twice in a row.
 - **AC-4** — **Done.** Real timer/virtual-time fidelity findings for
   SIH are documented in §6: a severe Renode work-queue/HRT timer gap
   (not the milder "drift" originally anticipated), root-caused to two

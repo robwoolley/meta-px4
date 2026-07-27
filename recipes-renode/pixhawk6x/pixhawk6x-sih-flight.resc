@@ -1,0 +1,17 @@
+:name: Pixhawk 6X FMU SIH flight
+
+using sysbus
+$name?="pixhawk6x"
+mach create $name
+
+machine LoadPlatformDescription $repl
+
+sysbus LoadELF $bin
+
+emulation CreateServerSocketTerminal $mavlink_port "telem1"
+connector Connect sysbus.uart7 telem1
+
+emulation CreateServerSocketTerminal $console_port "console"
+connector Connect sysbus.usart3 console
+
+start
