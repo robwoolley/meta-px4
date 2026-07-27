@@ -221,6 +221,7 @@ machine-checkable acceptance criteria) is merged.
 | M4 | SIH-in-Renode simulation + MAVLink bridge (mavlink-router recipe on the companion side) | [004](004-sih-renode-mavlink.md) | Scripted MAVSDK arm→takeoff→land against Renode in CI |
 | M5 | Hardware validation on Pixhawk 6X | 005 (TBD) | Boots from OE-built `.px4` via `px_uploader.py`; all sensor drivers probe |
 | M6 | Productization: single-invocation multiconfig build, eSDK, `yocto-check-layer`, CI pipeline, docs | 006 (TBD) | CI runs M1/M3/M4 gates per commit |
+| M7 | `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl (no real hardware available; pursued alongside/instead of M5) | [007](007-sitl-gazebo-ros2.md) | `px4-autopilot`'s `gz_bridge`/`gz_plugins` build for real (not stub targets); Gazebo `x500` model flies under ROS 2 offboard control; QGC observes a live heartbeat |
 
 ## 6. Risks
 
