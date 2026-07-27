@@ -1,0 +1,175 @@
+From f9a4e214c58d418b656147f6df8ccb97a88f864b Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Sun, 26 Jul 2026 23:16:51 -0400
+Subject: [PATCH] STM32_Timer: fix capture/compare arming for wrapping
+ free-running counters
+
+Two related bugs in the compare-match arming logic prevented periodic
+software timers (STM32 HRT drivers, e.g. NuttX/PX4's hrt_call_every())
+from ever rescheduling more than a couple of times after the first
+callback:
+
+1. UpdateCaptureCompareTimer() only armed a channel's compare-match
+   sub-timer when the current counter Value was numerically less than
+   the newly-written CCRx target. But free-running periodic software
+   timers routinely reschedule by writing 'deadline & 0xffff' (or
+   equivalent) to CCRx, which is very often numerically *behind* the
+   current counter -- normal, expected wraparound behavior on real
+   hardware (the match simply occurs on the next lap). The model
+   treated this as invalid and left the channel permanently disarmed
+   until the next full-period overflow happened to re-sync it, which
+   only partially masked the problem.
+
+2. A CCRx write of exactly 0 was treated as "channel disabled", a
+   leftover special case from the old (broken) comparison above. On
+   real hardware 0 is a perfectly valid compare target -- it matches
+   whenever the counter wraps around to 0, which is a legitimate and
+   fairly common target for a periodic reschedule to land on exactly.
+   This one alone was enough to permanently stop rescheduling the
+   first time a computed deadline happened to be a multiple of the
+   counter's period.
+
+Fixed by computing the actual number of ticks until the next match
+directly, accounting for wraparound, instead of a raw numeric
+comparison against the current counter value. ccTimers[i] is now
+armed as a relative countdown (computed fresh on every CR1/CCRx/EGR
+write and on every main-timer overflow) rather than reusing the raw
+CCRx value as its own Limit; the raw value is kept separately
+(ccCompareValue[]) for register readback.
+
+Verified against a real, reproducible failure case: PX4's SIH module
+running under Renode on an STM32H753 (Pixhawk 6X FMU, HRT on TIM8)
+had every work-queue thread (which most flight-control modules,
+including SIH, depend on for periodic execution via hrt_call_every())
+permanently stuck at 0ms CPU / waiting on a semaphore, confirmed via
+NuttX's own 'top' command, after the very first HRT callback. Direct
+register inspection (paused, via the monitor) showed CCR3 stuck at
+exactly 0 -- case 2 above. With this fix, all previously-starved work
+queues (wq:INS0/ekf2, wq:rate_ctrl, wq:nav_and_controllers, wq:hp_default,
+wq:lp_default, sih) run continuously and accumulate real CPU time
+indefinitely, sensor data keeps updating, 'commander check' reports
+'Preflight check: OK', and the vehicle successfully arms.
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ .../Peripherals/Timers/STM32_Timer.cs         | 63 ++++++++++++-------
+ 1 file changed, 42 insertions(+), 21 deletions(-)
+
+diff --git a/src/Emulator/Peripherals/Peripherals/Timers/STM32_Timer.cs b/src/Emulator/Peripherals/Peripherals/Timers/STM32_Timer.cs
+index b669728d3..eae846967 100644
+--- a/src/Emulator/Peripherals/Peripherals/Timers/STM32_Timer.cs
++++ b/src/Emulator/Peripherals/Peripherals/Timers/STM32_Timer.cs
+@@ -246,10 +246,7 @@ public STM32_Timer(IMachine machine, ulong frequency, uint initialLimit) : base(
+                         }
+                         for(var i = 0; i < NumberOfCCChannels; ++i)
+                         {
+-                            if(ccTimers[i].Enabled)
+-                            {
+-                                ccTimers[i].Value = Value;
+-                            }
++                            UpdateCaptureCompareTimer(i);
+                         }
+                     }, name: "Update generation (UG)")
+                     .WithTag("Capture/compare 1 generation (CC1G)", 1, 1)
+@@ -332,15 +329,9 @@ public STM32_Timer(IMachine machine, ulong frequency, uint initialLimit) : base(
+                             return (uint)Value;
+                         }, name: "Counter value (CNT)")
+                     .WithReservedBits(timerCounterLengthInBits, 32 - timerCounterLengthInBits)
+-                    .WithWriteCallback((_, val) =>
++                    .WithWriteCallback((_, __) =>
+                     {
+-                        for(var i = 0; i < NumberOfCCChannels; ++i)
+-                        {
+-                            if(val < ccTimers[i].Limit)
+-                            {
+-                                ccTimers[i].Value = val;
+-                            }
+-                        }
++                        UpdateCaptureCompareTimers();
+                         UpdateInterrupts();
+                     })
+                 },
+@@ -390,13 +381,14 @@ public STM32_Timer(IMachine machine, ulong frequency, uint initialLimit) : base(
+             {
+                 var j = i;
+                 registersMap.Add((long)Registers.CaptureOrCompare1 + (j * 0x4), new DoubleWordRegister(this)
+-                    .WithValueField(0, timerCounterLengthInBits, valueProviderCallback: _ => (uint)ccTimers[j].Limit, writeCallback: (_, val) =>
++                    .WithValueField(0, timerCounterLengthInBits, valueProviderCallback: _ => ccCompareValue[j], writeCallback: (_, val) =>
+                     {
+-                        if(val == 0)
+-                        {
+-                            ccTimers[j].Enabled = false;
+-                        }
+-                        ccTimers[j].Limit = val;
++                        // Store the raw register value here (for readback and for
++                        // UpdateCaptureCompareTimer's wraparound-aware arithmetic);
++                        // ccTimers[j].Limit is a *relative* tick countdown computed
++                        // by UpdateCaptureCompareTimer, not this raw value -- see
++                        // its comment (0 is a valid target, not a "disabled" marker).
++                        ccCompareValue[j] = (uint)val;
+                     }, name: String.Format("Capture/compare value {0} (CCR{0})", j + 1))
+                     .WithReservedBits(timerCounterLengthInBits, 32 - timerCounterLengthInBits)
+                     .WithWriteCallback((_, __) => { UpdateCaptureCompareTimer(j); UpdateInterrupts(); })
+@@ -455,6 +447,7 @@ public override void Reset()
+                 ccInterruptFlag[i] = false;
+                 ccInterruptEnable[i] = false;
+                 ccOutputEnable[i] = false;
++                ccCompareValue[i] = 0;
+                 Connections[i].Unset();
+             }
+             UpdateInterrupts();
+@@ -477,13 +470,40 @@ public override void Reset()
+ 
+         public long Size => 0x400;
+ 
++        // Real hardware's CCRx is a plain register compared against a free-running
++        // (wrapping) counter: CNT is allowed to be numerically ahead of CCRx at the
++        // moment CCRx is written -- the match simply occurs on the *next* lap, after
++        // the counter wraps. This is the normal, expected way periodic software
++        // timers (e.g. NuttX/PX4's HRT drivers) reschedule themselves: they compute
++        // `deadline & 0xffff` and write that unconditionally, relying on wraparound.
++        //
++        // ccTimers[i] is modeled as a one-shot *relative* countdown (Value always
++        // starts at 0, fires after Limit ticks) rather than reusing the raw CCRx
++        // value directly as its Limit, so it needs the actual elapsed-ticks-until-
++        // match computed here, wraparound included -- not a straight `Value < CCRx`
++        // comparison, which only covers the non-wrapping case and otherwise leaves
++        // the channel permanently disarmed until the next full-period overflow.
++        //
++        // Note there is deliberately no "CCRx == 0 means disabled" special case:
++        // on real hardware 0 is just another valid compare target (it matches when
++        // the counter wraps around to 0, which happens once every period, same as
++        // any other value) -- software legitimately computes a target of exactly 0
++        // whenever a scheduled deadline happens to land on a period boundary, e.g.
++        // NuttX/PX4's HRT drivers on STM32 (hrt_call_reschedule() in hrt.c) truncate
++        // an absolute deadline to the low bits of a free-running counter with
++        // `deadline & 0xffff`, which is 0 whenever deadline is a multiple of 65536.
+         private void UpdateCaptureCompareTimer(int i)
+         {
+-            ccTimers[i].Enabled = Enabled && IsInterruptOrOutputEnabled(i) && Value < ccTimers[i].Limit;
+-            if(ccTimers[i].Enabled)
++            var shouldBeEnabled = Enabled && IsInterruptOrOutputEnabled(i);
++            if(shouldBeEnabled)
+             {
+-                ccTimers[i].Value = Value;
++                var target = ccCompareValue[i];
++                var period = Limit;
++                var ticksUntilMatch = target > Value ? (target - Value) : (period - Value) + target;
++                ccTimers[i].Limit = ticksUntilMatch > 0 ? ticksUntilMatch : period;
++                ccTimers[i].Value = 0;
+             }
++            ccTimers[i].Enabled = shouldBeEnabled;
+             ccTimers[i].Direction = Direction;
+         }
+ 
+@@ -576,6 +596,7 @@ private void UpdateInterrupts()
+         private readonly bool[] ccInterruptFlag = new bool[NumberOfCCChannels];
+         private readonly bool[] ccInterruptEnable = new bool[NumberOfCCChannels];
+         private readonly bool[] ccOutputEnable = new bool[NumberOfCCChannels];
++        private readonly uint[] ccCompareValue = new uint[NumberOfCCChannels];
+ 
+         private readonly uint initialLimit;
+         private readonly int timerCounterLengthInBits;
+-- 
+2.39.5
+

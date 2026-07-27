@@ -1,26 +1,29 @@
 # Spec 004 (M4): SIH-in-Renode simulation + MAVLink bridge
 
-- **Status:** In progress, real blocker found. REQ-1/REQ-2's firmware
-  builds and boots (§6), and a second real Renode DMA-model gap
-  (UART7/TELEM1, the same class of bug as spec 003's console DMA hang)
-  was found and fixed along the way. But SIH is **not** genuinely
-  running a continuous simulation as first believed — root-caused
-  (§6) to a severe, system-wide gap: every PX4 work-queue thread
-  (which most flight-control modules, SIH included, depend on for
-  periodic execution via `hrt_call_every`) is confirmed via `top once`
-  to sit at 0ms CPU time / `w:sem` state for the entire uptime — none
-  of them run past their first tick. This is a Renode hardware-timer
-  fidelity gap (`Timers.STM32_Timer`, fmu-v6x's `HRT_TIMER`=TIM8), not
-  an arming-check or SIH-specific bug, and is unresolved: fixing it
-  for real likely means either patching Renode's own timer model or
-  finding a better-modeled timer peripheral to repoint HRT at —
-  deliberately not attempted (explicit user decision: deprioritized in
-  favor of REQ-3, since the timer gap only blocks arming/flight, not
-  MAVLink reachability). REQ-3 done: a real `pymavlink` client
-  observed a genuine heartbeat over a UART-bridged socket (§6). REQ-4
-  done as a side effect (host prerequisite, no `mavlink-router`
-  needed). REQ-5/REQ-6 blocked on the timer gap above; REQ-6's answer
-  turned out to already be found (§6).
+- **Status:** REQ-1 through REQ-4 done; REQ-5 (scripted MAVSDK
+  arm→takeoff→land) not yet attempted but no longer blocked. The
+  work-queue/HRT timer gap flagged as a severe, unresolved blocker
+  earlier is now **fixed** — not in PX4/NuttX, but in Renode itself
+  (§6, [renode-patches/](../renode-patches/)): `Timers.STM32_Timer`'s
+  capture/compare arming didn't handle a free-running counter wrapping
+  around, and separately treated a compare value of exactly 0 as
+  "channel disabled" (a valid target on real hardware). Since PX4's
+  work-queue scheduling depends on this timer (fmu-v6x's `HRT_TIMER`
+  is TIM8) to reschedule itself, every work queue got exactly one
+  callback and then silently stopped forever — confirmed via NuttX's
+  `top` (0ms CPU / `w:sem` for the entire uptime) and by reading TIM8's
+  registers directly while paused (`CCR3` stuck at exactly `0`). With
+  both bugs fixed and a Renode rebuilt from source, all previously-
+  starved work queues (`wq:INS0`/ekf2, `wq:rate_ctrl`,
+  `wq:nav_and_controllers`, `sih`, `wq:hp_default`, `wq:lp_default`)
+  run continuously, `sensor_accel` keeps updating indefinitely,
+  `commander check` reports `Preflight check: OK`, and `commander arm`
+  genuinely arms the vehicle. REQ-3/REQ-4: a real `pymavlink` client
+  observed a genuine heartbeat over a UART-bridged socket (§6), no
+  `mavlink-router` needed. REQ-6's answer (§6) predates the fix and
+  should be read alongside it: the "severe" framing was accurate for
+  the unpatched Renode, resolved by patching Renode rather than by
+  finding a PX4/NuttX-side workaround.
 - **Created:** 2026-07-26
 - **Depends on:** [000-architecture.md](000-architecture.md) (G4, R2),
   [003-renode-boot.md](003-renode-boot.md) (Done: PX4 boots to a live
@@ -91,16 +94,19 @@ and assigns the research risk to this milestone, not M3.
 
 ## 3. Requirements
 
-- **REQ-1** — **Builds and boots; the "genuinely running" claim was
-  wrong, corrected in §6.** A SIH-enabled firmware variant exists
+- **REQ-1** — **Done, for real, as of the Renode timer fix (§6).** A
+  SIH-enabled firmware variant exists
   (`CONFIG_MODULES_SIMULATION_SIMULATOR_SIH=y` plus its Kconfig
   dependencies), extending `px4-firmware-renode` per §5.1's simpler
-  path, and publishes one valid, correctly-flagged simulated sample at
-  startup. But it is **not** continuously running: re-querying the
-  same topic later proved PX4's work-queue scheduling (which SIH runs
-  on) never advances past its first tick under Renode (§6) — a real,
-  severe, unresolved Renode timer-model gap, not something this layer
-  has fixed.
+  path. An earlier "genuinely running" claim based on a single
+  point-in-time snapshot was wrong — re-querying the same topic later
+  proved PX4's work-queue scheduling (which SIH runs on) never
+  advanced past its first tick under the plain portable Renode
+  release, a real Renode timer-model bug (§6), not a PX4/NuttX issue.
+  Fixed by patching Renode itself
+  ([renode-patches/](../renode-patches/)) and rebuilding it from
+  source; with that build, SIH runs continuously, `sensor_accel`
+  updates indefinitely, and the vehicle arms.
 - **REQ-2** — **Done.** `SYS_AUTOSTART` selects the existing
   `1100_rc_quad_x_sih` airframe (simplest vehicle type) rather than
   authoring a new one — confirmed via real boot log
@@ -280,6 +286,78 @@ is being surfaced as a real, evidenced blocker rather than a guessed
 fix, matching this project's own established practice of not
 patching around a problem before its root cause is understood.
 
+**Follow-up: patched Renode's own timer model, root-caused down to
+two exact bugs, and verified the fix directly.** Read
+`Timers.STM32_Timer`'s actual C# source (cloned
+`github.com/renode/renode` at tag `v1.16.1`, matching the installed
+portable release exactly) rather than guessing further. The channel-
+arming logic (`UpdateCaptureCompareTimer`) only armed a compare-match
+sub-timer when the *current* counter value was numerically less than
+the newly-written compare target:
+```
+ccTimers[i].Enabled = Enabled && IsInterruptOrOutputEnabled(i) && Value < ccTimers[i].Limit;
+```
+Cross-checked against the actual PX4/NuttX HRT driver source
+(`platforms/nuttx/src/px4/stm/stm32_common/hrt/hrt.c`,
+`hrt_call_reschedule()`): it deliberately reschedules by writing
+`deadline & 0xffff` to the compare register — i.e. the low 16 bits of
+a free-running, wrapping counter. This means the new compare target is
+very often numerically *behind* the current counter value, which is
+completely normal (the match just occurs on the next lap) — but the
+model's `Value < Limit` check treats that as invalid and leaves the
+channel disarmed. Confirmed this really was happening rather than
+merely theorized: after fixing it (below) and re-testing, `sih`'s
+`sensor_accel` published continuously for several real seconds before
+freezing *again* at the exact same virtual timestamp across two
+independent runs — too precise to be a random race, and definitively
+not fully fixed by the wraparound correction alone.
+
+Paused the second, still-reproducible freeze and read TIM8's actual
+registers directly via the monitor (`sysbus ReadDoubleWord`, the same
+peripheral-inspection technique already proven in spec 003): `CR1`
+showed the timer still enabled (`CEN=1`), `DIER` showed both PPM and
+HRT interrupts still enabled, `SR` showed no stuck pending flags — but
+`CCR3` (channel 3, fmu-v6x's `HRT_TIMER_CHANNEL`) read back as exactly
+`0`. The model has a second bug: a compare write of `0` is treated as
+"channel disabled" — a leftover special case from the old, broken
+comparison above. On real hardware `0` is simply another valid compare
+target (it matches whenever the counter wraps around to `0`, which is
+a normal, fairly common value for a computed deadline to land on
+exactly) — the "disabled" special case doesn't correspond to anything
+real, and is exactly what silently and permanently stopped HRT's
+channel the first time a reschedule happened to compute a target of 0.
+
+Fixed both together, computing the actual number of ticks until the
+next match directly (with wraparound) instead of a raw numeric
+comparison, and removing the "compare value 0 means disabled" special
+case entirely — see
+[`renode-patches/0001-STM32_Timer-fix-capture-compare-arming-for-wrapping-free-running-counters.patch`](../renode-patches/0001-STM32_Timer-fix-capture-compare-arming-for-wrapping-free-running-counters.patch)
+for the full patch and rationale. Built a patched Renode from source
+(.NET 8 SDK, portable-installed with no root needed) and verified
+directly against the same real firmware, no `.repl`/recipe changes
+needed:
+- `listener sensor_accel -n 1`, queried 8 times over 30+ seconds
+  (crossing well past both previous freeze points), returned a
+  genuinely fresh sample (sub-millisecond age) every single time.
+- `top once`: every previously-starved work queue now shows real,
+  accumulating CPU time —
+  `wq:INS0` (ekf2's estimation cycle) 0ms→135ms, `wq:rate_ctrl`
+  0ms→123ms, `sih` 0ms→79ms, `wq:nav_and_controllers` 0ms→55ms,
+  `wq:hp_default`/`wq:lp_default` 0ms→3-4ms; total task CPU usage
+  8.47%→41.76%.
+- `commander check` reports `INFO [commander] Preflight check: OK`
+  (the only remaining warning is the already-documented, unrelated
+  "Missing FMU SD Card", since Renode doesn't model fmu-v6x's SD
+  card).
+- `commander arm` genuinely arms: `INFO [commander] Armed by internal
+  command`.
+
+This resolves REQ-1 for real (§3) and directly unblocks REQ-5
+(scripted arm→takeoff→land is no longer blocked on a Renode-side
+limitation, only on writing the actual test). Not yet done: proposing
+this upstream to `github.com/renode/renode` — a real, verified fix,
+but sending it upstream is a separate decision from fixing it locally.
+
 **Second real Renode DMA-model gap found and fixed: UART7 (TELEM1),
 the same class of bug as spec 003's console DMA hang.** Discovered
 interactively: connecting to the console over a Renode
@@ -371,22 +449,28 @@ MAVLink directly.
 | UART7 (TELEM1) DMA hang | **Real gap found and fixed** — see above. Same Renode DMA2 model bug as spec 003's console hang, recurring on a second DMA2-routed UART; fixed the same way (patch 0004 disables `CONFIG_UART7_RXDMA`/`TXDMA`). |
 | MAVLink bridge transport: Ethernet or UART? | **UART** — Ethernet needs host `CAP_NET_ADMIN` for `CreateTap` (assessed impractical, not attempted); the UART bridge needed zero new host privileges since it reuses the console's already-proven socket mechanism. Verified with a real `pymavlink` heartbeat. |
 | Host MAVLink tooling: OE recipe or host prerequisite? | **Host prerequisite, not an OE recipe** — plain `pip install pymavlink` into a venv was sufficient; no `mavlink-router` intermediate needed. |
-| Timer/virtual-time fidelity under SIH | **Real, severe gap found (REQ-6's answer, found early).** Not "drift" — PX4's work-queue scheduling (SIH included) never advances past its first tick under Renode at all. See "Corrected finding" above. |
+| Timer/virtual-time fidelity under SIH | **Real, severe gap found *and fixed*.** Not "drift" — PX4's work-queue scheduling (SIH included) never advanced past its first tick under the plain portable Renode release. Two bugs in `Timers.STM32_Timer`'s capture/compare arming (wraparound-unaware comparison; compare-value-0 wrongly meaning "disabled"); fixed with a Renode source patch ([renode-patches/](../renode-patches/)), verified directly. |
 | FLASH budget for the SIH variant | **Real constraint hit and fixed** — see above. Removing real-hardware drivers redundant with SIH's simulated backends was necessary, not optional. |
-| Arming blocked by a real, unresolved sensor-validity discrepancy | **Yes, root-caused** — not an arming-check bug: `sensor_accel` genuinely stops updating after one publish because the work-queue thread that would republish it never runs again (see "Corrected finding" above). This is the current blocker for REQ-5 (scripted arm→takeoff→land), and it's a Renode timer-model gap, not something fixable purely in PX4/NuttX config. |
+| Arming blocked by a real sensor-validity discrepancy | **Root-caused and fixed** — not an arming-check bug: `sensor_accel` genuinely stopped updating after one publish because the work-queue thread that would republish it never ran again, due to the Renode timer bugs above. With a patched Renode, `commander check` reports `OK` and `commander arm` genuinely arms. No longer a blocker for REQ-5. |
 
 ## 7. Acceptance criteria
 
-- **AC-1** — **Not met.** SIH-enabled firmware builds and boots in
-  Renode (REQ-1, REQ-2), but does not stay in a state that would
-  accept `commander` mode-switch/arm commands: the work-queue timer
-  gap (§6) means sensor data goes stale and `commander check` never
-  passes.
+- **AC-1** — **Done, using a Renode built from
+  [renode-patches/](../renode-patches/).** SIH-enabled firmware builds
+  and boots in Renode (REQ-1, REQ-2) and stays in a state that accepts
+  `commander` mode-switch/arm commands: `commander check` reports
+  `Preflight check: OK` and `commander arm` genuinely arms (§6). Not
+  met with the plain portable Renode release from §2.2 — needs the
+  patched build.
 - **AC-2** — **Done.** A real, host-side socket connection observes a
   MAVLink heartbeat from the Renode instance (REQ-3, REQ-4) — see §6.
-- **AC-3** — **Not met, blocked by AC-1.** Scripted MAVSDK
-  arm→takeoff→land completes successfully against the Renode SIH
-  instance, runnable headlessly with a pass/fail exit code (REQ-5).
+- **AC-3** — **Not yet attempted.** Scripted MAVSDK arm→takeoff→land
+  completes successfully against the Renode SIH instance, runnable
+  headlessly with a pass/fail exit code (REQ-5). No longer blocked by
+  AC-1 — this is now genuinely the next real step, not something
+  waiting on a Renode-side fix.
 - **AC-4** — **Done.** Real timer/virtual-time fidelity findings for
-  SIH are documented in §6: a severe, unresolved Renode work-queue/HRT
-  timer gap, not the milder "drift" originally anticipated (REQ-6).
+  SIH are documented in §6: a severe Renode work-queue/HRT timer gap
+  (not the milder "drift" originally anticipated), root-caused to two
+  specific bugs in `Timers.STM32_Timer` and fixed with a Renode source
+  patch, verified directly (REQ-6).

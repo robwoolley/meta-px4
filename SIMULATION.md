@@ -197,19 +197,25 @@ nsh> listener sensor_accel -n 1  # one simulated accel sample (should read ~9.81
 nsh> commander check           # preflight/arming check summary
 ```
 
-**Known open issue** (see `specs/004-sih-renode-mavlink.md` §6): SIH
-publishes one valid, correctly-flagged simulated sample at startup,
-but does **not** keep running — re-querying `listener sensor_accel -n
-1` later returns the exact same timestamp every time. This traces to a
-real, severe Renode gap: PX4's work-queue scheduling (which SIH and
-most flight-control modules run on) never advances past its first
-tick under Renode, a hardware-timer fidelity gap in Renode's
-`Timers.STM32_Timer` model (fmu-v6x's `HRT_TIMER` is TIM8), not
-something fixable via PX4/NuttX config. As a result `commander check`
-always reports `Preflight check: FAILED` and arming does not work —
-this is currently unresolved (fixing it for real means either patching
-Renode's own timer model or finding a differently-modeled timer
-peripheral to repoint HRT at; neither has been attempted).
+**Requires a patched Renode** (see `specs/004-sih-renode-mavlink.md`
+§6 and [renode-patches/](renode-patches/)): with the plain portable
+Renode release from §2.2, SIH publishes one valid, correctly-flagged
+simulated sample at startup but does **not** keep running —
+re-querying `listener sensor_accel -n 1` later returns the exact same
+timestamp every time, `commander check` always reports `Preflight
+check: FAILED`, and arming does not work. This traced to two real bugs
+in Renode's `Timers.STM32_Timer` model (the peripheral behind
+fmu-v6x's `HRT_TIMER`, TIM8): its capture/compare arming logic didn't
+handle a free-running counter wrapping around, and a compare value of
+exactly 0 was wrongly treated as "channel disabled". Since PX4's
+work-queue scheduling (`ScheduleOnInterval`/`hrt_call_every`, used by
+SIH and most flight-control modules) depends on this timer to
+reschedule itself, every work queue got exactly one callback and then
+silently stopped forever. Fixed in
+[`renode-patches/0001-STM32_Timer-fix-capture-compare-arming-for-wrapping-free-running-counters.patch`](renode-patches/0001-STM32_Timer-fix-capture-compare-arming-for-wrapping-free-running-counters.patch)
+— see that directory's `README.md` for how to build a patched Renode
+from source. With it, `commander check` reports `Preflight check: OK`
+and `commander arm` genuinely arms the vehicle.
 
 ## 6. Connecting MAVLink from the host
 
