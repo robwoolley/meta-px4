@@ -57,17 +57,37 @@ git -C src/Infrastructure am /path/to/meta-px4/renode-patches/0001-STM32_Timer-f
 The `-t -p` packaging step needs `fpm` to produce a redistributable
 tarball; without it, the build still succeeds and
 `output/bin/Release/publish/` contains a working, framework-dependent
-build you can run directly with `dotnet output/bin/Release/publish/Renode.dll`
-(or `./output/bin/Release/publish/Renode` if a matching `dotnet`
-runtime is on `PATH`) from the `renode-src` checkout — Renode resolves
-its bundled `platforms/`/`scripts/` directories relative to its
-working directory when run this way, so invoke it from `renode-src/`.
+build. Run it via the **native apphost** —
+`./output/bin/Release/publish/Renode` — not `dotnet Renode.dll`: the
+latter crashes at startup (`FileNotFoundException` loading `AntShell`)
+because `TypeManager`'s plugin scan behaves differently depending on
+how the managed assembly was launched. `cd renode-src` first, since
+Renode resolves its bundled `platforms/`/`scripts/` directories
+relative to its working directory, not relative to the binary.
+
+**Don't `mv`/relocate a build tree after building it** — for reasons
+not fully root-caused, a working build reproducibly crashes with the
+same `AntShell` `FileNotFoundException` after being moved to a new
+absolute path, even though every file needed is still physically
+present at the new location and no config file references the old
+path. If you need the build to live somewhere specific, `git clone` /
+`build.sh` directly at that final path rather than building elsewhere
+and moving it there afterward.
 
 Only `src/Infrastructure`'s `STM32_Timer.cs` changes; nothing else
 about the normal Renode/SIMULATION.md workflow (the `.repl`/`.resc`
 files, the `px4-firmware-renode` recipe, the UART socket-bridging
 technique) needs to change to use a patched build — just point at the
 patched `Renode` binary instead of the portable release's.
+
+**Already built for this project:** a patched build lives at
+`oe-px4/tools/renode-patched-src` (the source checkout + build
+output) with a ready-to-use wrapper at `oe-px4/tools/renode-patched`
+(sets up `DOTNET_ROOT`/`PATH` for the portable .NET 8 SDK at
+`oe-px4/tools/dotnet` and execs the apphost from the right working
+directory) — use it exactly like the plain `renode` binary from
+`SIMULATION.md`, e.g.
+`oe-px4/tools/renode-patched -P 4464 --disable-xwt -e "..."`.
 
 **Not yet done:** this hasn't been proposed upstream
 (`github.com/renode/renode`) or submitted as a PR — it's a real,
