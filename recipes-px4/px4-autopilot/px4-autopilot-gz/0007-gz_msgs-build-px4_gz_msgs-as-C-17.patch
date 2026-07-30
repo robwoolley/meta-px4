@@ -1,0 +1,38 @@
+From f7e05a7c829891a30488655805d679979ebed55b Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Thu, 30 Jul 2026 19:03:32 -0400
+Subject: [PATCH 2/2] gz_msgs: build px4_gz_msgs as C++17
+
+PX4's project-wide CMAKE_CXX_STANDARD is 14, but newer protobuf ships
+headers that include abseil, which hard-requires C++17
+(absl/base/policy_checks.h: "C++ versions less than C++17 are not
+supported."). Override just this target rather than bumping the whole
+project's C++ standard.
+
+Upstream-Status: Inappropriate [needs discussion upstream first]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ src/modules/simulation/gz_msgs/CMakeLists.txt | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/modules/simulation/gz_msgs/CMakeLists.txt b/src/modules/simulation/gz_msgs/CMakeLists.txt
+index 2501811e5e..8bd4e3ab85 100644
+--- a/src/modules/simulation/gz_msgs/CMakeLists.txt
++++ b/src/modules/simulation/gz_msgs/CMakeLists.txt
+@@ -23,6 +23,12 @@ if (Protobuf_FOUND)
+             ${CMAKE_CURRENT_BINARY_DIR}
+             ${Protobuf_INCLUDE_DIRS}
+     )
++    # PX4's project-wide CMAKE_CXX_STANDARD is 14, but newer protobuf ships
++    # headers that include abseil, which hard-requires C++17
++    # (absl/base/policy_checks.h: "C++ versions less than C++17 are not
++    # supported."). Override just this target rather than bumping the
++    # whole project's C++ standard.
++    target_compile_features(px4_gz_msgs PUBLIC cxx_std_17)
+     target_link_libraries(px4_gz_msgs PUBLIC ${PROTOBUF_LIBRARIES})
+     if (Protobuf_VERSION VERSION_LESS "3.8")
+         target_compile_options(px4_gz_msgs PRIVATE -Wno-error=float-equal)
+-- 
+2.39.5
+

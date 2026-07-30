@@ -1,0 +1,44 @@
+From 92c9a687ce855f7d1d3403d4009f202810daacba Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Thu, 30 Jul 2026 19:16:42 -0400
+Subject: [PATCH] gz_plugins: silence -Werror=double-promotion/float-equal from
+ third-party headers
+
+gz-math7's own headers (e.g. Quaternion.hh) do implicit float->double
+promotions internally, and OpenCV's headers (matx.inl.hpp) compare
+floats with ==. PX4 builds with -Werror=double-promotion and
+-Werror=float-equal project-wide, which turns these third-party-header
+warnings into hard errors for every plugin subdirectory that touches
+gz/math or OpenCV types (hit in MovingPlatformController.cpp and
+OpticalFlowSensor.cpp/OpticalFlowSystem.cpp, not specific to either).
+Directory-scoped via add_compile_options so it covers all plugin
+subdirectories without patching each one individually.
+
+Upstream-Status: Inappropriate [needs discussion upstream first]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ src/modules/simulation/gz_plugins/CMakeLists.txt | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/modules/simulation/gz_plugins/CMakeLists.txt b/src/modules/simulation/gz_plugins/CMakeLists.txt
+index 7fc65c8b5b..9b102ddbcb 100644
+--- a/src/modules/simulation/gz_plugins/CMakeLists.txt
++++ b/src/modules/simulation/gz_plugins/CMakeLists.txt
+@@ -62,6 +62,13 @@ if (gz-transport_FOUND)
+     file(MAKE_DIRECTORY ${PX4_GZ_PLUGIN_OUTPUT_DIR})
+     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PX4_GZ_PLUGIN_OUTPUT_DIR})
+ 
++    # Third-party headers (gz-math7's Quaternion.hh, OpenCV's matx.inl.hpp)
++    # trip PX4's project-wide -Werror=double-promotion / -Werror=float-equal
++    # for every plugin below that touches gz/math or OpenCV types.
++    # Directory-scoped so it covers all of them without patching each
++    # plugin's own CMakeLists.txt individually.
++    add_compile_options(-Wno-error=double-promotion -Wno-error=float-equal)
++
+     # Add our plugins as subdirectories
+     add_subdirectory(optical_flow)
+     add_subdirectory(template_plugin)
+-- 
+2.39.5
+

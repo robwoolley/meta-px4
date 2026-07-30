@@ -1,0 +1,89 @@
+From 81d1f259c195e0f8d3a5d1bf41f40cca7013a7bd Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Thu, 30 Jul 2026 19:03:32 -0400
+Subject: [PATCH 1/2] gz_plugins: support linking a pre-fetched PX4-OpticalFlow
+ checkout
+
+ExternalProject_Add's GIT_REPOSITORY unconditionally does a live git
+clone of PX4/PX4-OpticalFlow at build time, which fails outright in a
+network-isolated (bitbake sandboxed) build. Its own klt_feature_tracker
+submodule has the same problem one level down, and its .gitmodules URL
+isn't affected by cloning the parent repo from a local path -- so
+rather than trying to make ExternalProject's own git clone +
+submodule-init steps work against a local mirror, skip them entirely
+via SOURCE_DIR + DOWNLOAD_COMMAND "" when PX4_OPTICALFLOW_SOURCE_DIR
+points at an already-fetched (submodules included) local checkout.
+Falls back to the original upstream GIT_REPOSITORY/GIT_TAG otherwise.
+
+Also passes -DCMAKE_TOOLCHAIN_FILE through to ExternalProject_Add's
+nested cmake configure invocation, which otherwise doesn't inherit the
+parent build's cross-toolchain/sysroot settings and fails to find
+OpenCV.
+
+Upstream-Status: Inappropriate [needs discussion upstream first]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ .../optical_flow/optical_flow.cmake           | 46 ++++++++++++++-----
+ 1 file changed, 35 insertions(+), 11 deletions(-)
+
+diff --git a/src/modules/simulation/gz_plugins/optical_flow/optical_flow.cmake b/src/modules/simulation/gz_plugins/optical_flow/optical_flow.cmake
+index 8ac1c1f649..fd1ca354e6 100644
+--- a/src/modules/simulation/gz_plugins/optical_flow/optical_flow.cmake
++++ b/src/modules/simulation/gz_plugins/optical_flow/optical_flow.cmake
+@@ -35,17 +35,41 @@ include(ExternalProject)
+ find_package(OpenCV REQUIRED)
+ 
+ if(NOT TARGET OpticalFlow)
+-    ExternalProject_Add(OpticalFlow
+-        GIT_REPOSITORY https://github.com/PX4/PX4-OpticalFlow.git
+-        GIT_TAG master
+-        PREFIX ${CMAKE_BINARY_DIR}/OpticalFlow
+-        INSTALL_DIR ${CMAKE_BINARY_DIR}/OpticalFlow/install
+-        CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+-        BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/OpticalFlow/install/lib/libOpticalFlow.so
+-        UPDATE_DISCONNECTED ON
+-        BUILD_ALWAYS OFF
+-        STEP_TARGETS build
+-    )
++    if(DEFINED PX4_OPTICALFLOW_SOURCE_DIR)
++        # Use an already-fetched local checkout (submodules included) as-is,
++        # skipping ExternalProject's own git clone + submodule-init steps
++        # entirely -- those would still try to reach the real GitHub for
++        # PX4-OpticalFlow's own klt_feature_tracker submodule (its
++        # .gitmodules URL isn't affected by cloning the parent repo from a
++        # local path), which fails in a network-isolated build.
++        ExternalProject_Add(OpticalFlow
++            SOURCE_DIR ${PX4_OPTICALFLOW_SOURCE_DIR}
++            DOWNLOAD_COMMAND ""
++            PREFIX ${CMAKE_BINARY_DIR}/OpticalFlow
++            INSTALL_DIR ${CMAKE_BINARY_DIR}/OpticalFlow/install
++            # ExternalProject_Add runs its own separate cmake configure
++            # invocation, which by default doesn't inherit the parent
++            # build's cross-toolchain/sysroot settings (needed here to
++            # find OpenCV inside the OE sysroot).
++            CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
++            BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/OpticalFlow/install/lib/libOpticalFlow.so
++            UPDATE_DISCONNECTED ON
++            BUILD_ALWAYS OFF
++            STEP_TARGETS build
++        )
++    else()
++        ExternalProject_Add(OpticalFlow
++            GIT_REPOSITORY https://github.com/PX4/PX4-OpticalFlow.git
++            GIT_TAG master
++            PREFIX ${CMAKE_BINARY_DIR}/OpticalFlow
++            INSTALL_DIR ${CMAKE_BINARY_DIR}/OpticalFlow/install
++            CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
++            BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/OpticalFlow/install/lib/libOpticalFlow.so
++            UPDATE_DISCONNECTED ON
++            BUILD_ALWAYS OFF
++            STEP_TARGETS build
++        )
++    endif()
+ 
+     ExternalProject_Get_Property(OpticalFlow install_dir)
+     set(OpticalFlow_INCLUDE_DIRS ${install_dir}/include CACHE INTERNAL "")
+-- 
+2.39.5
+

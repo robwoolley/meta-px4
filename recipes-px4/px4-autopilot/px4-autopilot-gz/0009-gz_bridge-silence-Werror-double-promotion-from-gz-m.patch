@@ -1,0 +1,37 @@
+From 75cad5acdab7ee23698804a4f08d6fa9f4e034fa Mon Sep 17 00:00:00 2001
+From: Rob Woolley <rob.woolley@windriver.com>
+Date: Thu, 30 Jul 2026 19:11:38 -0400
+Subject: [PATCH] gz_bridge: silence -Werror=double-promotion from gz-math7
+ headers
+
+Same issue as gz_plugins (previous patch): gz-math7's own headers do
+implicit float->double promotions internally, which PX4's project-wide
+-Werror=double-promotion turns into a hard error. Hit in GZBridge.cpp.
+
+Upstream-Status: Inappropriate [needs discussion upstream first]
+
+Signed-off-by: Rob Woolley <rob.woolley@windriver.com>
+---
+ src/modules/simulation/gz_bridge/CMakeLists.txt | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/modules/simulation/gz_bridge/CMakeLists.txt b/src/modules/simulation/gz_bridge/CMakeLists.txt
+index aa4b1be37e..0ed84222b3 100644
+--- a/src/modules/simulation/gz_bridge/CMakeLists.txt
++++ b/src/modules/simulation/gz_bridge/CMakeLists.txt
+@@ -40,6 +40,12 @@ endif()
+ file(GLOB gz_worlds ${PX4_SOURCE_DIR}/Tools/simulation/gz/worlds/*.sdf)
+ file(GLOB gz_airframes ${PX4_SOURCE_DIR}/ROMFS/px4fmu_common/init.d-posix/airframes/*_gz_*)
+ 
++# gz-math7's own headers (e.g. Quaternion.hh) do implicit float->double
++# promotions internally; PX4 builds with -Werror=double-promotion
++# project-wide, which turns this third-party-header warning into a hard
++# error here too (same issue already worked around in gz_plugins/CMakeLists.txt).
++add_compile_options(-Wno-error=double-promotion)
++
+ if (gz-transport_FOUND)
+     if (gz-transport_VERSION VERSION_LESS "15")
+         set(GZ_TRANSPORT_TARGET "gz-transport${gz-transport_VERSION_MAJOR}::core")
+-- 
+2.39.5
+
