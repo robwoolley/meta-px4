@@ -1,7 +1,7 @@
 # Spec 007 (M7): `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl
 
-- **Status:** In progress. Scoping done against real evidence (§2); no
-  code changes yet.
+- **Status:** In progress. REQ-1/REQ-2 (AC-1) complete and verified —
+  see §6. REQ-3 through REQ-7 not started.
 - **Created:** 2026-07-27
 - **Depends on:** [000-architecture.md](000-architecture.md) (M7 row),
   [002-px4-firmware.md](002-px4-firmware.md)'s sibling `px4-autopilot`
@@ -205,14 +205,125 @@ this in the recipe removes the guesswork.
 
 ## 6. Implementation record
 
-_To be filled in as work proceeds._
+### REQ-1 / REQ-2 (AC-1) — complete
+
+`bblayers.conf` gained `meta-ros-common`, `meta-ros2`, `meta-ros2-jazzy`
+(REQ-1), plus `meta-openembedded/meta-multimedia` (for `ffmpeg`, a
+`gz-common5` dependency) and `meta-qt5` (for `gz-gui8`/`gz-sim8`'s hard,
+unconditional Qt5 dependency — checked directly against upstream
+`gz-sim`'s `CMakeLists.txt`; there is no headless-only build flag).
+`local.conf` gained `LICENSE_FLAGS_ACCEPTED = "commercial"` (`ffmpeg`'s
+patent-encumbered codecs) and removed the `ptest` `DISTRO_FEATURE` and
+`create-spdx` `INHERIT` class — both unrelated, OE-core-default QA/SBOM
+features that failed on `bluez5`/`openscenegraph` respectively and
+aren't needed for a local SITL build. None of this is tracked in git
+(build-directory config).
+
+A new `px4-autopilot-gz_1.17.0.bb` recipe (in
+`recipes-px4/px4-autopilot/`, alongside the base `px4-autopilot`
+recipe it `require`s `.inc` from) adds `DEPENDS` on `gz-transport13`,
+`gz-sim8`, `gz-sensors8`, `gz-plugin2`, `sdformat`, `protobuf-native`,
+`opencv`, plus `export GZ_DISTRO = "harmonic"` and `inherit cmake_qt5`.
+Verified for real (not just a successful `bitbake` exit code) by
+extracting the built `.ipk` and confirming `./opt/px4/bin/px4-gz_bridge`
+and real plugin `.so` files (`libOpticalFlow.so`,
+`libOpticalFlowSystem.so`, `libBuoyancySystemPlugin.so`, plus
+`moving_platform_controller`/`generic_motor`/`spacecraft_thruster`
+plugin dirs and Gazebo world/model `.sdf` files) are present — not the
+stub "ERROR: Gazebo simulation dependencies not found!" targets.
+
+Getting a clean build required five additional patches
+(`recipes-px4/px4-autopilot/px4-autopilot-gz/000{6,7,8,9}-*.patch` plus
+a `CMAKE_PROJECT_INCLUDE` workaround file), each a narrow, targeted fix
+for a real, reproducible build failure — not guessed:
+
+- **Shadowed recipes.** `meta-ros-common` carries its own
+  `pymavlink_2.4.15.bb` (identical `PN`+`PV`) at a higher
+  `BBFILE_PRIORITY` than meta-px4, silently winning the provider race
+  and making meta-px4's own patched copy (fixing a
+  `setup_requires=['future']` live-`pip`-fetch failure) dead code that
+  never actually applied. Fixed by converting meta-px4's recipe into a
+  `pymavlink_%.bbappend` targeting the winning recipe instead (same
+  fix shape as an unrelated, pre-existing `gts` issue found the same
+  way — its `SRC_URI` pointed at Debian's long-retired Alioth git
+  hosting, moved to `salsa.debian.org`). Checked meta-px4's other
+  same-name recipes (`python3-empy`, `python3-lark-parser`) against
+  meta-ros-common's copies too — both turned out to be identical,
+  harmless dead duplicates, not shadowed bugs.
+- **`gz-sim8`'s own generated CMake config bug.** Its
+  `gz-sim8-config.cmake` calls `find_package(gz-gui8)` *before*
+  `find_package(Qt5 COMPONENTS Core;Quick;QuickControls2)`, even though
+  `gz-gui8`'s exported targets link against `Qt5::Core` — a real
+  ordering bug in gz-cmake's generated output, confirmed by reading the
+  installed `.cmake` file directly. Worked around via
+  `-DCMAKE_PROJECT_INCLUDE=<file>` injecting an early
+  `find_package(Qt5 COMPONENTS Core Quick QuickControls2 REQUIRED)`
+  right after PX4's own top-level `project()` call, rather than
+  patching generated gz-cmake output.
+- **Qt5 CMake integration.** Separately, meta-qt5's own
+  `Qt5Config.cmake` silently no-ops (skips defining any `Qt5::*`
+  imported targets) unless `OE_QMAKE_PATH_EXTERNAL_HOST_BINS` and
+  friends are set — these only get passed via `cmake_qt5.bbclass`
+  (`inherit`ed, not just `DEPENDS`-ed).
+- **Live network fetch during `do_compile`.**
+  `gz_plugins/optical_flow.cmake` does its own `ExternalProject_Add`
+  git clone of `PX4/PX4-OpticalFlow` (plus that repo's own
+  `klt_feature_tracker` submodule) at build time — fails outright in a
+  network-isolated bitbake sandbox, same class of problem as the
+  `uxrce_dds_client`/CycloneDDS `idlc` live-fetches patches 0002/0003
+  already solve for the base `px4-autopilot` recipe. Fixed by fetching
+  `PX4-OpticalFlow` via this recipe's own `SRC_URI` (`gitsm://`, so
+  `do_fetch` — which has real network access — also pulls the
+  submodule), then patching `optical_flow.cmake` to use `SOURCE_DIR
+  <local-checkout>` + `DOWNLOAD_COMMAND ""` when
+  `-DPX4_OPTICALFLOW_SOURCE_DIR` is set, skipping
+  `ExternalProject_Add`'s git/submodule machinery entirely rather than
+  trying to make it succeed against a local mirror (its `.gitmodules`
+  URL is unaffected by cloning the parent repo from a local path, so a
+  naive "just clone locally" fix doesn't reach the submodule problem).
+  Also needed `-DCMAKE_TOOLCHAIN_FILE` passed through to
+  `ExternalProject_Add`'s `CMAKE_ARGS`, since it runs a fully separate
+  `cmake` invocation that doesn't inherit the parent build's
+  cross-toolchain/sysroot settings on its own (surfaced as "OpenCV not
+  found" even though it's a real `DEPENDS`).
+- **C++ standard mismatch.** Newer `protobuf` ships headers that
+  include abseil, which hard-requires C++17
+  (`absl/base/policy_checks.h`); PX4's project-wide
+  `CMAKE_CXX_STANDARD` is 14. Overrode just the `px4_gz_msgs` target
+  (`target_compile_features(... PUBLIC cxx_std_17)`) rather than
+  bumping the whole project's standard.
+- **Third-party-header warnings as errors.** `gz-math7`'s own headers
+  (`Quaternion.hh`) do implicit float→double promotions, and OpenCV's
+  (`matx.inl.hpp`) compare floats with `==`; PX4 builds with
+  `-Werror=double-promotion`/`-Werror=float-equal` project-wide, so
+  both became hard errors the first time any `gz_plugins` or
+  `gz_bridge` code touched those headers (hit across
+  `MovingPlatformController.cpp`, `OpticalFlowSensor.cpp`,
+  `OpticalFlowSystem.cpp`, and `GZBridge.cpp` — not specific to any one
+  file). Silenced via directory-scoped `add_compile_options` in
+  `gz_plugins/CMakeLists.txt` and `gz_bridge/CMakeLists.txt`, covering
+  every current and future plugin/bridge target in those directories
+  rather than patching each file individually.
+
+Also hit and fixed, unrelated to any specific patch: `rm_work` only
+actually prunes a recipe's `tmp/work/<recipe>` once that recipe's own
+`do_build` task runs, which never happens for dependency-only recipes
+(`llvm`, `openssl`, `mesa`, `boost`, etc.) in a single-recipe (not
+image) build — `tmp/work` grew to 48G+ across several iterations before
+this was understood; recovered via a full `tmp/` wipe (safe: `sstate-cache`
+and `DL_DIR` live outside `tmp/` and are untouched, so nothing already
+built was lost) rather than the partial `tmp/work`-only wipe tried
+first, which desynced `tmp/stamps` from the (now-empty) `tmp/work` and
+caused a second round of unrelated failures (`zlib`, `gcc-runtime`
+`do_package_write_ipk` failing on missing `packages-split/` paths).
 
 ## 7. Acceptance criteria
 
-- **AC-1** — `bitbake mc:...:px4-autopilot` (or equivalent) succeeds
-  with `meta-ros-common`/`meta-ros2`/`meta-ros2-jazzy` in
-  `bblayers.conf`, and the resulting binary's `gz_bridge`/`gz_plugins`
-  modules are real, not stubs (REQ-1, REQ-2).
+- **AC-1** — MET. `bitbake px4-autopilot-gz` succeeds with
+  `meta-ros-common`/`meta-ros2`/`meta-ros2-jazzy` in `bblayers.conf`,
+  and the resulting binary's `gz_bridge`/`gz_plugins` modules are real,
+  not stubs — verified against the actual installed `.ipk` contents,
+  see §6 (REQ-1, REQ-2).
 - **AC-2** — `px4-msgs` and `px4-ros2-cpp` build successfully as
   meta-ros2-jazzy-gated dynamic-layer recipes in meta-px4, and are
   invisible to a build that doesn't include meta-ros (REQ-3, REQ-4).
