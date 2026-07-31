@@ -1,7 +1,7 @@
 # Spec 007 (M7): `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl
 
-- **Status:** In progress. REQ-1/REQ-2 (AC-1) and REQ-3 (part of AC-2)
-  complete and verified — see §6. REQ-4 through REQ-7 not started.
+- **Status:** In progress. REQ-1 through REQ-4 (AC-1, AC-2) complete
+  and verified — see §6. REQ-5 through REQ-7 not started.
 - **Created:** 2026-07-27
 - **Depends on:** [000-architecture.md](000-architecture.md) (M7 row),
   [002-px4-firmware.md](002-px4-firmware.md)'s sibling `px4-autopilot`
@@ -317,7 +317,7 @@ first, which desynced `tmp/stamps` from the (now-empty) `tmp/work` and
 caused a second round of unrelated failures (`zlib`, `gcc-runtime`
 `do_package_write_ipk` failing on missing `packages-split/` paths).
 
-### REQ-3 (part of AC-2) — complete
+### REQ-3 — complete
 
 `px4-msgs_2.0.1.bb` added under
 `dynamic-layers/meta-ros2-jazzy/recipes-px4/px4-msgs/`, gated via a new
@@ -366,6 +366,43 @@ Verified against the actual built `.ipk` contents (not just a
 successful `bitbake` exit code): all `rosidl` `.so` files land in the
 main `px4-msgs` package, none in `px4-msgs-dev`.
 
+### REQ-4 (AC-2 complete) — complete
+
+`px4-ros2-cpp_0.0.1.bb` added in the same dynamic-layer, pinned to
+`Auterion/px4-ros2-interface-lib`'s `release/1.17` branch — confirmed
+to exist (`release/1.16` and `release/1.18` also exist; `1.17` is the
+exact match for this project's PX4-Autopilot pin, not just the only
+option). `inherit ros_component` again (same lesson as `px4-msgs`) —
+this package's own `CMakeLists.txt` also reads `$ENV{ROS_DISTRO}`
+directly.
+
+Two real, non-obvious build issues:
+
+- **Monorepo layout.** The actual `px4_ros2_cpp` package lives under a
+  subdirectory, not the repo root — needed an explicit `S =
+  "${UNPACKDIR}/${BP}/px4_ros2_cpp"` override and a `LIC_FILES_CHKSUM`
+  path one level up (`file://../LICENSE`), since `LICENSE` itself is at
+  the repo root.
+- **Missing native codegen tool.** The build generates
+  `px4_all_messages.hpp` via `python3 -m em` (empy-templated,
+  introspecting `px4_msgs`'s installed message list through
+  `ament_index_get_resource` at CMake configure time) — failed with
+  `No module named em` until `python3-empy-native` was added; nothing
+  else in the dependency chain pulls it in.
+
+Verified two ways, not just a successful `bitbake` exit code:
+
+- Extracted the built `.ipk` and confirmed `libpx4_ros2_cpp.so` lands
+  in the main `px4-ros2-cpp` package.
+- Ran the upstream repo's own `scripts/check-message-compatibility.py`
+  — REQ-4's own explicit bar — against fresh checkouts of `px4_msgs`
+  (`release/1.17`) and PX4-Autopilot pinned to this project's *exact*
+  `SRCREV` (`d6f12ad1c4`, not just the `release/1.17` branch tip — note
+  `px4_msgs`'s own `release/1.17` HEAD commit message says it was last
+  verified against a *different* PX4-Autopilot commit,
+  `a64536802b5a5b6ba8fe6ef1b7dcb6a54a0a99ea`, not this project's pin):
+  `OK! Messages are compatible.`
+
 ## 7. Acceptance criteria
 
 - **AC-1** — MET. `bitbake px4-autopilot-gz` succeeds with
@@ -373,9 +410,11 @@ main `px4-msgs` package, none in `px4-msgs-dev`.
   and the resulting binary's `gz_bridge`/`gz_plugins` modules are real,
   not stubs — verified against the actual installed `.ipk` contents,
   see §6 (REQ-1, REQ-2).
-- **AC-2** — PARTIALLY MET. `px4-msgs` builds successfully as a
-  meta-ros2-jazzy-gated dynamic-layer recipe in meta-px4 (REQ-3, done —
-  see §6). `px4-ros2-cpp` (REQ-4) not started.
+- **AC-2** — MET. `px4-msgs` and `px4-ros2-cpp` build successfully as
+  meta-ros2-jazzy-gated dynamic-layer recipes in meta-px4 — see §6
+  (REQ-3, REQ-4). Invisibility to a meta-ros-less build follows from
+  the `BBFILES_DYNAMIC` mechanism itself (proven, pre-existing pattern
+  — see §2/§5.1), not separately re-tested here.
 - **AC-3** — `micro-xrce-dds-agent` builds and runs, observed bridging
   real DDS traffic between PX4 and a ROS 2 node (REQ-5).
 - **AC-4** — A real, host-side QGroundControl instance observes a live
