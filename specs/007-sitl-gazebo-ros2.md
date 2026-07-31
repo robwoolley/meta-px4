@@ -1,7 +1,7 @@
 # Spec 007 (M7): `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl
 
-- **Status:** In progress. REQ-1/REQ-2 (AC-1) complete and verified —
-  see §6. REQ-3 through REQ-7 not started.
+- **Status:** In progress. REQ-1/REQ-2 (AC-1) and REQ-3 (part of AC-2)
+  complete and verified — see §6. REQ-4 through REQ-7 not started.
 - **Created:** 2026-07-27
 - **Depends on:** [000-architecture.md](000-architecture.md) (M7 row),
   [002-px4-firmware.md](002-px4-firmware.md)'s sibling `px4-autopilot`
@@ -317,6 +317,55 @@ first, which desynced `tmp/stamps` from the (now-empty) `tmp/work` and
 caused a second round of unrelated failures (`zlib`, `gcc-runtime`
 `do_package_write_ipk` failing on missing `packages-split/` paths).
 
+### REQ-3 (part of AC-2) — complete
+
+`px4-msgs_2.0.1.bb` added under
+`dynamic-layers/meta-ros2-jazzy/recipes-px4/px4-msgs/`, gated via a new
+`BBFILES_DYNAMIC += "ros2-jazzy-layer:..."` line in meta-px4's own
+`conf/layer.conf` (no `LAYERDEPENDS` added — same pattern `meta-ros2`
+itself uses for its own `dynamic-layers/meta-qt6/`). Confirmed visible
+via `bitbake-layers show-recipes px4-msgs` with the layer present.
+
+Hand-written (not superflore-generated), since `px4_msgs` isn't
+rosdistro-indexed to a version-matched release — pinned to
+`release/1.17` to match this project's PX4-Autopilot pin, per
+`px4_msgs`'s own per-PX4-release branching model. Modeled on
+`geometry-msgs_5.3.8-1.bb`'s `ROS_*` variable pattern.
+
+Getting a clean build+package traced back to one root cause twice:
+`inherit ros_component` — which every superflore-*generated* recipe
+gets automatically via `ros_superflore_generated`, but a hand-written
+recipe doesn't — is where the real fixes live, not something to
+reimplement piecemeal:
+
+- **`KeyError: 'ROS_DISTRO'`** in `rosidl_generator_rs` (it reads the
+  real process environment variable via `os.environ['ROS_DISTRO']`).
+  Nothing in `ros_distro_jazzy`/`ros2_distro.bbclass` exports the
+  bitbake variable of the same name into the process environment on
+  its own — `ros_component.bbclass` does (`export ROS_DISTRO`).
+- **`-dev` package QA failure** ("contains non-symlink .so", `[dev-elf]`):
+  rosidl's generated typesupport/generator `.so` files have no SONAME
+  versioning at all (standard ROS2 behavior). The obvious fix —
+  explicitly adding the file pattern to `FILES:${PN}` — doesn't
+  actually work: `PACKAGES` lists `${PN}-dev` *before* `${PN}`, so
+  `-dev`'s identical default pattern (from `FILES_SOLIBSDEV`) claims
+  the files first regardless of what the main package's own `FILES`
+  also lists. `ros_component`'s own `inherit ros_faulty_solibs` is the
+  real fix: it blanks `FILES_SOLIBSDEV` itself (removing `-dev`'s claim
+  entirely) and re-adds the identical pattern to the main package's
+  `FILES` instead, sidestepping the ordering conflict. (Tried and
+  rejected first: `ros_insane_dev_so` — a similarly-named, also-real
+  meta-ros-common class, but it targets a different case, versioned
+  `.so.*` files, and doesn't match plain `.so` at all.)
+
+Also needed a `service-msgs` `ROS_BUILD_DEPENDS`/`ROS_EXPORT_DEPENDS`/
+`ROS_EXEC_DEPENDS` addition — `px4_msgs`'s own `srv/` definitions pull
+in ROS 2's standard `service_msgs` package.
+
+Verified against the actual built `.ipk` contents (not just a
+successful `bitbake` exit code): all `rosidl` `.so` files land in the
+main `px4-msgs` package, none in `px4-msgs-dev`.
+
 ## 7. Acceptance criteria
 
 - **AC-1** — MET. `bitbake px4-autopilot-gz` succeeds with
@@ -324,9 +373,9 @@ caused a second round of unrelated failures (`zlib`, `gcc-runtime`
   and the resulting binary's `gz_bridge`/`gz_plugins` modules are real,
   not stubs — verified against the actual installed `.ipk` contents,
   see §6 (REQ-1, REQ-2).
-- **AC-2** — `px4-msgs` and `px4-ros2-cpp` build successfully as
-  meta-ros2-jazzy-gated dynamic-layer recipes in meta-px4, and are
-  invisible to a build that doesn't include meta-ros (REQ-3, REQ-4).
+- **AC-2** — PARTIALLY MET. `px4-msgs` builds successfully as a
+  meta-ros2-jazzy-gated dynamic-layer recipe in meta-px4 (REQ-3, done —
+  see §6). `px4-ros2-cpp` (REQ-4) not started.
 - **AC-3** — `micro-xrce-dds-agent` builds and runs, observed bridging
   real DDS traffic between PX4 and a ROS 2 node (REQ-5).
 - **AC-4** — A real, host-side QGroundControl instance observes a live
