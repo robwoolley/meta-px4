@@ -1,9 +1,12 @@
 # Spec 007 (M7): `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl
 
-- **Status:** In progress. REQ-1 through REQ-5 and REQ-7 (AC-1, AC-2,
-  AC-3 partial) complete and verified — see §6. REQ-6 (full end-to-end
-  runtime verification; needs a bootable image not yet built) is the
-  only remaining item.
+- **Status:** In progress. REQ-1 through REQ-5 and REQ-7 complete and
+  verified — see §6. REQ-6's two image recipes (an all-in-one
+  container, and a `runqemu`-bootable image pairing with host-native
+  Gazebo/QGroundControl) are built and their contents verified against
+  real artifacts; the remaining piece of REQ-6 — actually watching
+  Gazebo render a vehicle and QGroundControl show a live heartbeat —
+  needs a human at a screen and hasn't been done (AC-4).
 - **Created:** 2026-07-27
 - **Depends on:** [000-architecture.md](000-architecture.md) (M7 row),
   [002-px4-firmware.md](002-px4-firmware.md)'s sibling `px4-autopilot`
@@ -461,20 +464,119 @@ same class of non-issue as not host-running `px4-gz_bridge` directly).
 node to observe real bridged DDS traffic — that's REQ-6's own explicit
 scope (end-to-end verification), not re-attempted here.
 
+### REQ-6 — two image recipes build and package correctly; GUI runtime verification still requires a human at QGroundControl
+
+Two independent runnable images, plus three new supporting recipes,
+were added and **each has been built end-to-end with real `bitbake`
+runs and its output inspected directly** (not just a successful exit
+code) — the same evidentiary bar as every other requirement in this
+spec. What has *not* been done, and can't be done from here, is
+actually watching Gazebo's GUI render a vehicle or QGroundControl show
+a live heartbeat — that needs a human at a screen, per the user's own
+framing of this work.
+
+**New recipes:**
+- `qgroundcontrol-appimage` (`recipes-graphics/qgroundcontrol/`) —
+  fetches the official upstream QGroundControl v5.0.8 AppImage (the
+  latest tagged *stable* release; v5.1.0 is a same-day
+  release-candidate, deliberately not used) and repackages it with an
+  `--appimage-extract-and-run` wrapper so it needs no FUSE inside a
+  container. **Built successfully**; the produced `.ipk` was extracted
+  and confirmed to contain the real 180816376-byte AppImage plus the
+  wrapper script at the expected `${bindir}` paths.
+- `px4-sitl-launch-scripts` (`recipes-px4/px4-sitl-launch-scripts/`) —
+  one script setting the `PX4_GZ_MODELS`/`PX4_GZ_WORLDS`/
+  `PX4_GZ_PLUGINS`/`PX4_GZ_SERVER_CONFIG`/`GZ_SIM_*` environment
+  variables against `px4-autopilot-gz`'s real *installed* paths under
+  `/opt/px4` (found by reading `px4-autopilot-1.17.0.bb`'s own patch
+  0004 install rules directly, since PX4 itself only generates this
+  env file into its *build* tree via `gz_env.sh.in`, never ships it),
+  then starts `MicroXRCEAgent`, QGroundControl, and PX4 SITL in order
+  (PX4's own `px4-rc.gzsim` launches Gazebo itself). **Built
+  successfully.**
+- Two image recipes under `recipes-core/images/`:
+  `px4-sitl-gazebo-qgc-image` (Scenario 1, container) and
+  `px4-sitl-qemu-image` (Scenario 2, `runqemu`-bootable).
+
+**Scenario 1 (`px4-sitl-gazebo-qgc-image`) — built; contents verified
+against the actual `.tar.bz2`:**
+```
+bitbake px4-sitl-gazebo-qgc-image
+```
+completed with all 11652 tasks succeeding, producing
+`px4-sitl-gazebo-qgc-image-qemux86-64.rootfs.tar.bz2`. Extracting and
+listing it directly confirmed every path
+`start-sitl-gazebo-qgc.sh` depends on is really there:
+`/opt/px4/bin/px4`, `/opt/px4/bin/px4-gz_bridge`,
+`/opt/px4/share/gz/{models,worlds,server.config}` (including
+`x500/model.sdf` and `default.sdf`, exactly what the `gz_x500`
+airframe needs), `/opt/px4/lib/gz/plugins/*.so`, `/usr/bin/gz`,
+`/usr/bin/MicroXRCEAgent`, `/usr/bin/qgroundcontrol{,.AppImage}`, and
+the full `gz-sim8` plugin/world library. **Known inefficiency, left
+documented rather than silently fixed**: `PREFERRED_PROVIDER_virtual/kernel
+= "linux-dummy"` (oe-core's documented way to avoid building a kernel
+for the `container` `IMAGE_FSTYPE`, per its own
+`meta/lib/oeqa/selftest/cases/containerimage.py`) does not actually
+take effect when set inside the image recipe itself rather than a
+configuration file — this build also compiled a full `linux-yocto`
+that this particular image never uses. Not fixed by moving it to
+`local.conf`, since that would also affect `px4-sitl-qemu-image`,
+which genuinely needs a real kernel. Not a correctness problem — the
+container tarball is real and complete — just wasted build time/disk
+on the first build of this image.
+
+**Scenario 2 (`px4-sitl-qemu-image`) — built; contents verified
+against the actual `.ext4`'s manifest:**
+```
+bitbake px4-sitl-qemu-image
+```
+completed with all 11612 tasks succeeding, producing
+`px4-sitl-qemu-image-qemux86-64.rootfs.ext4`. Its
+`.manifest` confirms `px4-autopilot-gz`, `micro-xrce-dds-agent`,
+`px4-msgs`, and `px4-ros2-cpp` are all really installed at their
+correct pinned versions. Gazebo and QGroundControl are deliberately
+*not* in this image — GAZEBO_ROS2.md section 4.2 documents them as
+official host-side packages/container/AppImage instead, exactly as
+requested.
+
+**Networking (the part with no artifact to inspect, reasoned from PX4
+source directly rather than assumed):** Read
+`ROMFS/px4fmu_common/init.d-posix/px4-rc.gzsim` and `px4-rc.mavlink`
+at the exact pinned SRCREV (`d6f12ad1c4f70ad3230afd7d86e971421e02fef4`)
+to get real, non-guessed facts: PX4's GCS MAVLink binds UDP port
+`18570` (not the older `14550` convention), and `gz-transport`
+discovery is multicast-based and partition-scoped (default partition
+name differs between two machines, so it must be set explicitly to
+the same value on both sides — a real, non-obvious gotcha this
+document calls out). This is why Scenario 2 needs `runqemu`'s `tap`
+networking (bridging the guest onto a real host interface) rather than
+the default `slirp` NAT, which cannot carry multicast. See
+GAZEBO_ROS2.md section 4.2.3 for the full walkthrough, including the
+`GZ_PARTITION`/`GZ_IP` environment variables and the manual QGroundControl
+UDP link (`192.168.7.2:18570`) needed since QGroundControl's
+auto-connect only scans localhost/broadcast.
+
+**Genuinely not done, and out of this environment's reach**: actually
+booting either image and watching Gazebo render a vehicle or
+QGroundControl show a live heartbeat and arm/fly it — both are GUI
+interactions needing a human at a screen, which is exactly why this
+request was scoped as "provide the images, scripts, and instructions,"
+not "demonstrate a live flight." ROS 2 topic bridging out to a
+host-side ROS 2 workstation for Scenario 2 (as opposed to `MicroXRCEAgent`
+running and the client connected, verifiable via `uxrce_dds_client status`
+inside the guest) is likewise out of scope — not something this
+document was asked to cover.
+
 ### REQ-7 — complete
 
 [GAZEBO_ROS2.md](../GAZEBO_ROS2.md) added (new doc, matching how
 `SIMULATION.md` covers the separate Renode track): prerequisites
 (meta-ros layers, `meta-multimedia`/`meta-qt5`, the three `local.conf`
 additions, QGroundControl as a host prerequisite), build commands for
-all four recipes, what was verified for each and how, and the disk
-space pitfall from §6. Its own §4 is explicit that REQ-6's runtime
-verification is real, scoped, *not yet done* work — requiring a
-bootable image this project hasn't built for this combination yet
-(this project's own established pattern for running anything beyond
-`bitbake <recipe>` — see the main `README.md`'s `core-image-minimal` +
-kas quick start) — rather than documenting speculative, untested run
-steps as if they were known to work.
+all four §3 recipes plus the two §4 image recipes, what was verified
+for each and how, the disk space pitfall from §6, and full run/network
+instructions for both REQ-6 scenarios (`scripts/run-container.sh`,
+`scripts/qemu-tap-setup.sh`, `scripts/run-qemu-sitl.sh`).
 
 ## 7. Acceptance criteria
 
@@ -489,9 +591,12 @@ steps as if they were known to work.
   the `BBFILES_DYNAMIC` mechanism itself (proven, pre-existing pattern
   — see §2/§5.1), not separately re-tested here.
 - **AC-3** — PARTIALLY MET. `micro-xrce-dds-agent` builds successfully
-  (REQ-5, see §6). Not yet done: running it and observing real bridged
-  DDS traffic between PX4 and a ROS 2 node — folded into REQ-6's
-  end-to-end verification scope.
-- **AC-4** — A real, host-side QGroundControl instance observes a live
-  heartbeat and arms/flies the Gazebo-simulated `x500`, with ROS 2
-  topics visible via the Agent (REQ-6).
+  and ships in both REQ-6 images (§6). Not yet done: observing real
+  bridged DDS traffic between PX4 and a host-side ROS 2 node — out of
+  scope for what REQ-6 was actually asked to cover (see its §6 entry).
+- **AC-4** — NOT YET MET. Requires a human at a screen: booting one of
+  REQ-6's two images and watching a real, host-side QGroundControl
+  instance observe a live heartbeat and arm/fly the Gazebo-simulated
+  `x500`. Both images build and their contents are verified (§6); this
+  criterion is specifically about the runtime GUI interaction neither
+  this environment nor an unattended agent can perform.
