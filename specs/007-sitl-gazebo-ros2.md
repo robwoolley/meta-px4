@@ -1,7 +1,9 @@
 # Spec 007 (M7): `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl
 
-- **Status:** In progress. REQ-1 through REQ-5 (AC-1, AC-2, AC-3
-  partial) complete and verified — see §6. REQ-6/REQ-7 not started.
+- **Status:** In progress. REQ-1 through REQ-5 and REQ-7 (AC-1, AC-2,
+  AC-3 partial) complete and verified — see §6. REQ-6 (full end-to-end
+  runtime verification; needs a bootable image not yet built) is the
+  only remaining item.
 - **Created:** 2026-07-27
 - **Depends on:** [000-architecture.md](000-architecture.md) (M7 row),
   [002-px4-firmware.md](002-px4-firmware.md)'s sibling `px4-autopilot`
@@ -458,6 +460,21 @@ same class of non-issue as not host-running `px4-gz_bridge` directly).
 **Not yet done**: actually running it against PX4 SITL + a live ROS 2
 node to observe real bridged DDS traffic — that's REQ-6's own explicit
 scope (end-to-end verification), not re-attempted here.
+
+### REQ-7 — complete
+
+[GAZEBO_ROS2.md](../GAZEBO_ROS2.md) added (new doc, matching how
+`SIMULATION.md` covers the separate Renode track): prerequisites
+(meta-ros layers, `meta-multimedia`/`meta-qt5`, the three `local.conf`
+additions, QGroundControl as a host prerequisite), build commands for
+all four recipes, what was verified for each and how, and the disk
+space pitfall from §6. Its own §4 is explicit that REQ-6's runtime
+verification is real, scoped, *not yet done* work — requiring a
+bootable image this project hasn't built for this combination yet
+(this project's own established pattern for running anything beyond
+`bitbake <recipe>` — see the main `README.md`'s `core-image-minimal` +
+kas quick start) — rather than documenting speculative, untested run
+steps as if they were known to work.
 
 ## 7. Acceptance criteria
 

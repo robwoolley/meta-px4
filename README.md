@@ -18,6 +18,8 @@ two distinct configurations:
 | Recipe | Purpose |
 |---|---|
 | `px4-autopilot` | The posix/SITL flight stack, built with `cmake.bbclass` against PX4's top-level CMakeLists (`-DCONFIG=${PX4_CONFIG}`). |
+| `px4-autopilot-gz` | Same posix/SITL build, with real (not stub) Gazebo Harmonic simulation support — see [GAZEBO_ROS2.md](GAZEBO_ROS2.md). |
+| `px4-msgs`, `px4-ros2-cpp`, `micro-xrce-dds-agent` | ROS 2 message/interface libraries and the host-side DDS-XRCE agent, gated on `meta-ros2-jazzy` being present (`dynamic-layers/meta-ros2-jazzy/`) — see [GAZEBO_ROS2.md](GAZEBO_ROS2.md). |
 | `microcdr` | eProsima Micro CDR, normally cloned from GitHub *at compile time* by the Micro-XRCE-DDS-Client SuperBuild. |
 | `microxrceddsclient` | eProsima Micro XRCE-DDS Client (PX4 fork), normally built by PX4 as a nested `ExternalProject_Add`. |
 | `cyclonedds-px4-native` | Host `idlc` with the `cdrstream-desc` feature, normally bootstrapped by PX4 at configure time with a hardcoded `/usr/bin/gcc`. |
