@@ -1,7 +1,7 @@
 # Spec 007 (M7): `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl
 
-- **Status:** In progress. REQ-1 through REQ-4 (AC-1, AC-2) complete
-  and verified — see §6. REQ-5 through REQ-7 not started.
+- **Status:** In progress. REQ-1 through REQ-5 (AC-1, AC-2, AC-3
+  partial) complete and verified — see §6. REQ-6/REQ-7 not started.
 - **Created:** 2026-07-27
 - **Depends on:** [000-architecture.md](000-architecture.md) (M7 row),
   [002-px4-firmware.md](002-px4-firmware.md)'s sibling `px4-autopilot`
@@ -149,11 +149,13 @@ infrastructure (`meta-ros`) already available to this project.
   not), builds successfully, and its own
   `check-message-compatibility.py` passes against this layer's
   `px4-msgs` + pinned PX4-Autopilot checkout.
-- **REQ-5** — A new `micro-xrce-dds-agent` recipe (plain meta-px4
-  recipe, not dynamic-layer-gated, since it has no ROS 2 build-time
-  dependency of its own) builds and runs, bridging PX4's
-  `uxrce_dds_client` to ROS 2 DDS topics over UDP (port 8888 per the
-  diagram).
+- **REQ-5** — A new `micro-xrce-dds-agent` recipe builds and runs,
+  bridging PX4's `uxrce_dds_client` to ROS 2 DDS topics over UDP (port
+  8888 per the diagram). *(Corrected during implementation — see §6:
+  it does have a real ROS 2 build-time dependency, `fastrtps`/`fastcdr`,
+  so it lives in the `meta-ros2-jazzy` dynamic layer alongside
+  `px4-msgs`/`px4-ros2-cpp`, not as a plain, ungated meta-px4 recipe as
+  originally planned here.)*
 - **REQ-6** — End-to-end verification: `px4-autopilot` (Gazebo-enabled)
   boots, Gazebo Sim simulates an `x500` quadcopter, QGroundControl
   observes a live MAVLink heartbeat and can arm/fly it, and ROS 2
@@ -183,13 +185,15 @@ infrastructure (`meta-ros`) already available to this project.
 
 ```
 meta-px4/
-├── dynamic-layers/
-│   └── meta-ros2-jazzy/          # only active when meta-ros2-jazzy is in bblayers.conf
-│       └── recipes-px4/
-│           ├── px4-msgs/
-│           └── px4-ros2-cpp/
-└── recipes-px4/
-    └── micro-xrce-dds-agent/     # plain recipe, no dynamic-layer gating needed
+└── dynamic-layers/
+    └── meta-ros2-jazzy/          # only active when meta-ros2-jazzy is in bblayers.conf
+        └── recipes-px4/
+            ├── px4-msgs/
+            ├── px4-ros2-cpp/
+            └── micro-xrce-dds-agent/  # corrected during implementation: needs
+                                        # fastrtps/fastcdr (real ROS 2 build-time
+                                        # deps), not a plain ungated recipe as
+                                        # originally planned -- see §6
 ```
 
 ### 5.2 `GZ_DISTRO=harmonic` pinning
@@ -403,6 +407,58 @@ Verified two ways, not just a successful `bitbake` exit code:
   `a64536802b5a5b6ba8fe6ef1b7dcb6a54a0a99ea`, not this project's pin):
   `OK! Messages are compatible.`
 
+### REQ-5 (AC-3, partial) — build complete; runtime bridging deferred to REQ-6
+
+**Correction to this spec's own original REQ-5/§5.1 design**: the
+Agent was assumed to have "no ROS 2 build-time dependency of its own,"
+placed as a plain `recipes-px4/micro-xrce-dds-agent/` recipe. Real
+investigation showed otherwise — `micro-xrce-dds-agent_2.4.3.bb` lives
+under the `meta-ros2-jazzy` dynamic layer instead (alongside
+`px4-msgs`/`px4-ros2-cpp`), because bridging into *real* DDS (ROS 2's
+`rmw_fastrtps`, via the Agent's `UAGENT_FAST_PROFILE`) genuinely
+requires `fastrtps`/`fastcdr`, both `meta-ros2-jazzy` packages — not
+optional convenience deps.
+
+Pinned to `v2.4.3`, the last `v2.x` release before eProsima's
+Fast-RTPS→Fast-DDS rename landed as a major-version CMake-package-name
+break: `v2.4.3`'s `CMakeLists.txt` calls `find_package(fastrtps 2.14
+REQUIRED)`, an exact match for `meta-ros2-jazzy`'s own
+`fastrtps_2.14.6-1.bb`. `master`/`v3.x` calls `find_package(fastdds 3
+REQUIRED)` instead, which `meta-ros2-jazzy` doesn't provide (only
+`meta-ros2-rolling`/`-lyrical` do, and mixing ROS distro layers isn't
+supported here).
+
+Three independent build issues:
+
+- **Live network fetch during `do_compile`** (the same recurring
+  pattern from REQ-2's `optical_flow.cmake`): `UAGENT_SUPERBUILD`
+  defaults `ON` and does its own `ExternalProject_Add` git fetch of
+  `fastcdr`/`fastrtps`/`spdlog`/`foonathan_memory_vendor`. Disabled in
+  favor of the versions already staged via `DEPENDS`.
+- **Missing `CMAKE_PREFIX_PATH` for ROS's install prefix.** This is a
+  plain, non-ROS CMake application (no `inherit ros_*`), so it doesn't
+  get `ros_ament_cmake.bbclass`'s usual addition of ROS's
+  `/opt/ros/jazzy` prefix — `find_package(fastcdr)` failed even though
+  it's a real, staged `DEPENDS`, until added explicitly.
+- **Third-party version skew, again**: `meta-oe`'s `spdlog_1.17.0.bb`
+  pulls in a very recent `fmt` (v12), whose stricter type-checking
+  rejects this Agent release's own code (missing `fmt::formatter`
+  specializations for `eprosima::uxr::*EndPoint` types — written
+  against an older `fmt` API). Logging output is optional, not core
+  DDS-XRCE↔DDS bridging functionality, so `UAGENT_LOGGER_PROFILE=OFF`
+  avoids the whole dependency rather than patching multiple call sites
+  for a `fmt` version this release predates.
+
+Verified against the actual built `.ipk` contents: a real, correctly
+linked `MicroXRCEAgent` ELF executable and versioned
+`libmicroxrcedds_agent.so.2.4.3` (not stub/empty artifacts) — confirmed
+via `file`, not host-executed (it's a cross-compiled target binary;
+the host's dynamic loader path doesn't match the OE target layout,
+same class of non-issue as not host-running `px4-gz_bridge` directly).
+**Not yet done**: actually running it against PX4 SITL + a live ROS 2
+node to observe real bridged DDS traffic — that's REQ-6's own explicit
+scope (end-to-end verification), not re-attempted here.
+
 ## 7. Acceptance criteria
 
 - **AC-1** — MET. `bitbake px4-autopilot-gz` succeeds with
@@ -415,8 +471,10 @@ Verified two ways, not just a successful `bitbake` exit code:
   (REQ-3, REQ-4). Invisibility to a meta-ros-less build follows from
   the `BBFILES_DYNAMIC` mechanism itself (proven, pre-existing pattern
   — see §2/§5.1), not separately re-tested here.
-- **AC-3** — `micro-xrce-dds-agent` builds and runs, observed bridging
-  real DDS traffic between PX4 and a ROS 2 node (REQ-5).
+- **AC-3** — PARTIALLY MET. `micro-xrce-dds-agent` builds successfully
+  (REQ-5, see §6). Not yet done: running it and observing real bridged
+  DDS traffic between PX4 and a ROS 2 node — folded into REQ-6's
+  end-to-end verification scope.
 - **AC-4** — A real, host-side QGroundControl instance observes a live
   heartbeat and arms/flies the Gazebo-simulated `x500`, with ROS 2
   topics visible via the Agent (REQ-6).
