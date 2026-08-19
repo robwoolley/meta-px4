@@ -370,6 +370,49 @@ against the upstream original — this is a genuine
 master-next-vs-wrynose incompatibility, worth reporting upstream when
 the carried delta is revisited.
 
+### Disk: `populate_sdk` needs far more room than an image build, and
+### `rm_work_all` does not clean up after it
+
+Worth knowing before running this milestone. The first `populate_sdk`
+attempt grew `tmp/` from 23 GB to 71 GB and filled the disk, dying on
+its *last* task (`do_populate_sdk`, 11179 of 11180) for want of space
+rather than on any build error.
+
+Two compounding reasons, both specific to `-c populate_sdk`:
+
+- **`rm_work` never fires during the build.** `rm_work.bbclass` hangs
+  `do_rm_work` off `do_build` (via `do_rm_work_all[recrdeptask]`), and
+  `-c populate_sdk` never runs `do_build` — so nothing in the
+  dependency tree is pruned as it goes, unlike a plain `bitbake
+  <image>`.
+- **`rm_work_all` afterwards does not reach the SDK host packages
+  either.** Running `bitbake ros2-image-sdktest -c rm_work_all` on the
+  aftermath freed only ~1 GB of 42 GB: its `recrdeptask` follows
+  `do_build`'s dependency chain, but the `nativesdk-*` recipes are
+  pulled in by `TOOLCHAIN_HOST_TASK` for `populate_sdk` specifically and
+  are not in that chain. They have to be named directly:
+
+  ```sh
+  MACHINE=qemux86-64 bitbake -c rm_work \
+      nativesdk-qemu nativesdk-llvm nativesdk-glibc-locale \
+      nativesdk-linux-libc-headers nativesdk-mesa \
+      gcc-cross-canadian-x86-64 binutils-cross-canadian-x86-64 \
+      qemu-helper-native px4-ros2-cpp px4-msgs
+  ```
+
+  That reclaimed 16 GB (`tmp/work` 40 GB → 21 GB). `nativesdk-qemu`
+  alone was 8.1 GB. `linux-yocto` stays regardless — `inject_rm_work`
+  adds anything inheriting `kernel` to `RM_WORK_EXCLUDE` by design.
+
+Use `bitbake -c rm_work` rather than deleting work directories by hand:
+`do_rm_work` rewrites `tmp/stamps`, promoting each completed task's
+stamp to a *setscene* stamp so a later run restores from sstate. A
+manual `rm -rf` leaves normal stamps claiming the output is still in
+`WORKDIR`, which is precisely the desync
+[007](007-sitl-gazebo-ros2.md) §6 recorded (`zlib`, `gcc-runtime`
+failing on missing `packages-split/`). If a work directory must be
+removed by hand, remove that recipe's `tmp/stamps` entry with it.
+
 ### REQ-1, REQ-5-REQ-8 — in progress
 
 The first `populate_sdk` run got as far as
