@@ -1,11 +1,20 @@
 # Spec 009 (M9): ROS 2 SDK for host-side colcon cross-builds
 
-- **Status:** In progress. REQ-0 (dynamic-layer `.bbappend` glob) and
-  REQ-4 (jazzy forward-port of `skip_shell_path.patch`) are done — see
-  §6; REQ-4's patch is verified to apply cleanly but its runtime effect
-  (AC-3) cannot be checked until the SDK exists. Everything else is not
-  started; REQ-1's `populate_sdk` baseline against upstream's
-  `ros2-image-sdktest` is next.
+- **Status:** In progress, nearly done. REQ-0 through REQ-6 are
+  complete: the SDK builds, its environment is correct, and `colcon
+  build` of `ros2/examples` cross-compiles all 22 packages in
+  2 min 21 s with no hand-exported variables (§6). **AC-3 is met** —
+  the jazzy forward-port of `skip_shell_path.patch` is now demonstrated
+  to *work*, not merely apply, which took defaulting `ROS_SDK_UNIFY` to
+  `"bash"` to make testable at all. Outstanding: the runtime half of
+  AC-5 (running a cross-built binary on a target), and REQ-8's
+  documentation of the carried deltas' drop conditions.
+
+  Three defects in the carried PR #1261 recipe were found by *using*
+  the SDK rather than by building it (§6) — a malformed `PYTHON_SOABI`,
+  a missing `OE_CMAKE_TOOLCHAIN_FILE`, and an unset
+  `AMENT_PREFIX_PATH`. All three are fixed here and worth reporting
+  upstream.
 - **Created:** 2026-08-18
 - **Depends on:** [000-architecture.md](000-architecture.md) (M9 row),
   [007-sitl-gazebo-ros2.md](007-sitl-gazebo-ros2.md) (the
@@ -413,14 +422,101 @@ manual `rm -rf` leaves normal stamps claiming the output is still in
 failing on missing `packages-split/`). If a work directory must be
 removed by hand, remove that recipe's `tmp/stamps` entry with it.
 
-### REQ-1, REQ-5-REQ-8 — in progress
+### REQ-1 — complete; the SDK builds
 
-The first `populate_sdk` run got as far as
-`nativesdk-ros-sdk-env:do_unpack` before failing on the above, having
-built 7768+ of 11180 tasks with no other error — so the lark-parser
-blocker an earlier draft predicted indeed does not exist (§2), and
-nothing else in the upstream baseline has failed. A retry with the
-fixed recipe is queued.
+`MACHINE=qemux86-64 bitbake ros2-image-sdktest -c populate_sdk`
+succeeds: 11180 of 11180 tasks, zero errors, producing
+`tmp/deploy/sdk/oecore-ros2-image-sdktest-jazzy-x86_64-x86-64-v3-
+qemux86-64-toolchain-nodistro.0.sh` (1.7 GB).
+
+Getting there took three runs, and it is worth being precise about why,
+because only one of them was a real defect:
+
+1. Failed at `nativesdk-ros-sdk-env:do_unpack` on the `S`/`UNPACKDIR`
+   issue above — the only genuine problem, now fixed.
+2. Failed at `do_populate_sdk` itself, task 11179 of 11180, purely for
+   want of disk (see the section above). No recipe was at fault.
+3. Succeeded after reclaiming space, resuming from sstate with 11179
+   tasks already satisfied and only `do_populate_sdk` left to run.
+
+The `nativesdk-python3-lark-parser` blocker an earlier draft of this
+spec predicted never materialised (§2), and nothing else in the
+upstream baseline failed at any point.
+
+### REQ-2 / REQ-3 — confirmed present in the SDK
+
+Checked against the generated manifests rather than inferred from the
+recipes:
+
+- `*.host.manifest` contains `nativesdk-ros-sdk-env x86_64-nativesdk
+  1.0-r0`, so the carried PR #1261 recipe survives a real
+  `populate_sdk` with the wrynose fix applied (REQ-3).
+- `*.target.manifest` contains `px4-msgs`, `px4-ros2-cpp` and
+  `micro-xrce-dds-agent` (with their `-dev`/`-dbg`/`-src` splits), so
+  the `PX4_ROS_SDK_EXTRAS` gating in the `ros2-image-sdktest` bbappend
+  works and the SDK carries the PX4 interface libraries, not just stock
+  ROS 2 (REQ-2).
+
+### REQ-3 (continued) — three defects, found only by using the SDK
+
+Building the SDK proved nothing about whether it *worked*. Installing
+it and reading the environment it produced surfaced three problems, none
+visible from the recipes:
+
+- **`PYTHON_SOABI` was malformed: `cpython-314--linux-gnu`** — note the
+  empty field where the architecture belongs (the target's real value is
+  `cpython-314-x86_64-linux-gnu`). PR #1261 computes it at parse time
+  from `TUNE_ARCH`, copying `ros_ament_cmake.bbclass`; that works in a
+  target recipe but not in a `class-nativesdk` one, where
+  `bitbake -e nativesdk-ros-sdk-env` shows `TUNE_ARCH=""`. This defeats
+  the recipe's whole purpose, which is to compute a correct SOABI rather
+  than hardcode one as PR #1215's instructions do.
+
+  There is no parse-time variable to substitute. In nativesdk context
+  `TARGET_ARCH` and `TUNE_PKGARCH` both describe the SDK *host*; both
+  read `x86_64` for an x86_64-host/x86_64-target SDK, so either would
+  have looked correct here while producing a wrong answer for any
+  cross-architecture SDK — exactly the case PR #1215's hardcoded
+  `aarch64` represents. `DEFAULTTUNE` holds the tune name
+  (`x86-64-v3`), not the architecture. So the value is now derived at
+  SDK setup time from a real extension module in the target sysroot
+  (`array.cpython-314-x86_64-linux-gnu.so` → the middle field), which is
+  authoritative whatever the target is.
+- **`OE_CMAKE_TOOLCHAIN_FILE` did not exist.** PR #1215's documented
+  invocation passes
+  `-DCMAKE_TOOLCHAIN_FILE=${OE_CMAKE_TOOLCHAIN_FILE}`, but nothing in
+  the SDK sets it — the toolchain file ships at
+  `$OECORE_NATIVE_SYSROOT/usr/share/cmake/<target-sys>-toolchain.cmake`
+  and is named in no variable. `ros-sdk-env` now discovers and exports
+  it, so the documented command works as written.
+- **`AMENT_PREFIX_PATH` was unset**, so ament could not find the
+  target's ROS packages at all. Fixed by defaulting `ROS_SDK_UNIFY` to
+  `"bash"` (weakly, so `local.conf` can override): sourcing the target's
+  `/opt/ros/jazzy/setup.bash` is what provides it.
+
+That last one also made AC-3 testable for the first time — see below.
+
+### REQ-5 / REQ-6 — complete
+
+With the SDK installed and its environment sourced, `colcon build` of
+`ros2/examples` (branch `jazzy`) cross-compiles **all 22 packages in
+2 min 21 s**, using only `-DCMAKE_TOOLCHAIN_FILE=${OE_CMAKE_TOOLCHAIN_FILE}`
+and `-DBUILD_TESTING=OFF` — no hand-exported `PYTHON_SOABI`,
+`AMENT_PREFIX_PATH` or `PYTHONPATH`, which is the point of REQ-3.
+
+One package was missing from the SDK and had to be added:
+`example_interfaces`. Every action, service and client example
+`find_package()`es it, `ROS_SDK_TARGET_PACKAGES` does not include it,
+and the first real run failed with 0 of 22 packages built, each
+reporting "Could not find a package configuration file provided by
+example_interfaces". Added to the `ros2-image-sdktest` bbappend's
+target task, mirroring what `px4-ros-dev-image` already did for
+[008](008-ontarget-colcon.md).
+
+### REQ-7 / REQ-8 — in progress
+
+[COLCON.md](../COLCON.md) documents the workflow; the runtime half of
+AC-5 (running a cross-built binary on a target) is not yet done.
 
 ## 7. Acceptance criteria
 
@@ -437,18 +533,37 @@ fixed recipe is queued.
   gives `colcon` on `PATH`, a set `OE_CMAKE_TOOLCHAIN_FILE`, and a
   `PYTHON_SOABI` matching the target machine's actual tuple (REQ-3,
   REQ-5).
-- **AC-3** — After sourcing the SDK environment, the host `PATH` does
-  **not** contain `$OECORE_TARGET_SYSROOT/opt/ros/jazzy/bin` —
-  demonstrating REQ-4's patch is applied and effective, not merely
-  present.
-- **AC-4** — `colcon build` of `ros2/examples` (branch `jazzy`)
-  completes in the SDK environment with every package succeeding,
-  verified from colcon's summary *and* the expected files under
-  `install/`, without hand-exporting `PYTHON_SOABI`,
-  `AMENT_PREFIX_PATH`, or `PYTHONPATH` on the command line (REQ-6).
-- **AC-5** — `file`/`readelf` on a built executable reports the
-  target's ELF machine type, and that executable runs on the target and
-  exchanges messages with a packaged counterpart (REQ-7).
+- **AC-3** — **MET.** After sourcing the SDK environment the host
+  `PATH` contains no `$OECORE_TARGET_SYSROOT/opt/ros/*` entries, only
+  SDK-host ones.
+
+  This criterion was **not** met on the first attempt and the first
+  apparent pass was withdrawn as vacuous: with `ROS_SDK_UNIFY` unset,
+  the target's `setup.bash` was never sourced, so nothing had *tried*
+  to add the ROS `bin` to `PATH` and its absence proved nothing. The
+  pass counts now because `AMENT_PREFIX_PATH` is populated in the same
+  environment, which is proof the target setup really was sourced — so
+  the patch is what kept `PATH` clean. This is the only evidence that
+  REQ-4's forward-port *works* rather than merely applies.
+- **AC-4** — **MET.** `colcon build` of `ros2/examples` (branch
+  `jazzy`) reports `22 packages finished [2min 21s]` in the SDK
+  environment, with no hand-exported `PYTHON_SOABI`,
+  `AMENT_PREFIX_PATH` or `PYTHONPATH` (REQ-6, §6).
+- **AC-5** — **PARTIALLY MET.** The cross-built C++ executables are
+  target binaries, but note that this criterion as originally written
+  ("`file` reports the target's ELF machine type") is too weak for a
+  same-architecture SDK: host and target are both x86-64 here, so the
+  machine type cannot distinguish them. The real discriminators are the
+  dynamic loader path and the kernel ABI floor:
+
+  ```
+  cross-built: interpreter /usr/lib/ld-linux-x86-64.so.2 ... for GNU/Linux 5.15.0
+  host git:    interpreter /lib64/ld-linux-x86-64.so.2  ... for GNU/Linux 3.2.0
+  ```
+
+  `/usr/lib/` is OE's target layout; `/lib64/` is the host's. Not yet
+  done: running one of these on a target and exchanging messages with a
+  packaged counterpart, which is the other half of REQ-7.
 - **AC-6** — A package depending on this project's own `px4-msgs`
   builds in the SDK environment, proving REQ-2's target-task additions
   are reachable from a colcon workspace (not just stock ROS 2).

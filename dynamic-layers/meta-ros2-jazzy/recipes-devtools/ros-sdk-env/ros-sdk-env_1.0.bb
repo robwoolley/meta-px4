@@ -33,24 +33,63 @@ FILES:${PN} = "${SDKPATHNATIVE}/post-relocate-setup.d/ros-sdk-env.sh ${SDKPATHNA
 # two generated shell fragments below.
 S = "${UNPACKDIR}"
 
-# This was pulled from meta-ros/meta-ros2/classes/ros_ament_cmake.bbclass
-PYTHON_SOABI_ARCH = "${TUNE_ARCH}-${TARGET_OS}"
-PYTHON_SOABI_ARCH_SUFFIX = "-gnu"
+# PR #1261 computes PYTHON_SOABI here at parse time, copying the approach in
+# meta-ros/meta-ros2/classes/ros_ament_cmake.bbclass:
+#     PYTHON_SOABI_ARCH = "${TUNE_ARCH}-${TARGET_OS}"
+#     PYTHON_SOABI = "cpython-...-${PYTHON_SOABI_ARCH}-gnu"
+# That works in a target recipe but NOT here: this is a class-nativesdk
+# recipe, where TUNE_ARCH is empty. 'bitbake -e nativesdk-ros-sdk-env' shows
+# TUNE_ARCH="" and, as a direct result, PYTHON_SOABI="cpython-314--linux-gnu"
+# -- note the empty field where the architecture should be. The SDK's real
+# target SOABI is cpython-314-x86_64-linux-gnu.
+#
+# There is no parse-time variable to substitute, either. In nativesdk context
+# TARGET_ARCH and TUNE_PKGARCH both describe the SDK *host*; they happen to
+# read x86_64 for an x86_64-host/x86_64-target SDK, so they would paper over
+# the bug here and produce a wrong answer for any cross-architecture SDK --
+# exactly the case PR #1215's hardcoded 'aarch64' was about. DEFAULTTUNE holds
+# the tune name (x86-64-v3), not the architecture (x86_64).
+#
+# So both values below are derived at SDK setup time from the installed target
+# sysroot instead, which is authoritative whatever the target turns out to be.
 
-# The suffix is already included in TARGET_OS
-PYTHON_SOABI_ARCH_SUFFIX:arm = ""
-
-# Another exception is i686 TUNE_ARCH in dunfell and newer with this change:
-# https://git.openembedded.org/openembedded-core/commit/?h=dunfell&id=6beab388e73b3ac6157650855a6c1fb1d71e8015
-PYTHON_SOABI_ARCH:i686 = "i386-${TARGET_OS}"
-
-PYTHON_SOABI = "cpython-${@d.getVar('PYTHON_BASEVERSION').replace('.', '')}${PYTHON_ABI}-${PYTHON_SOABI_ARCH}${PYTHON_SOABI_ARCH_SUFFIX}"
+# Sourcing the target's ROS setup is what puts AMENT_PREFIX_PATH in the
+# environment, without which ament cannot find the target's ROS packages and
+# no cross-build works. It is also what would otherwise pollute the host PATH,
+# which is precisely what AMENT_SKIP_SHELL_PATH (and jazzy's forward-ported
+# skip_shell_path.patch) exists to prevent. Defaulted on, weakly, so it can
+# still be turned off in local.conf.
+ROS_SDK_UNIFY ??= "bash"
 
 do_install:append:class-nativesdk () {
     # No SRC_URI means nothing guarantees S exists by do_install time.
     mkdir -p ${S}
 
-    echo "export PYTHON_SOABI=${PYTHON_SOABI}" > ${S}/ros-sdk-env.sh
+    # Quoted heredoc: this block is runtime shell for the SDK's setup, not
+    # something bitbake should expand. It contains no ${...}, so bitbake
+    # passes it through untouched.
+    cat > ${S}/ros-sdk-env.sh <<'ROSSDKEOF'
+# Derive the target Python SOABI from a real extension module in the target
+# sysroot, e.g. array.cpython-314-x86_64-linux-gnu.so -> the middle field.
+_ros_sdk_so=$(ls $OECORE_TARGET_SYSROOT/usr/lib/python*/lib-dynload/*.cpython-*.so 2>/dev/null | head -1)
+if [ -n "$_ros_sdk_so" ]; then
+    PYTHON_SOABI=$(basename "$_ros_sdk_so" | sed -e 's/^[^.]*\.//' -e 's/\.so$//')
+    export PYTHON_SOABI
+fi
+unset _ros_sdk_so
+
+# The SDK ships a CMake toolchain file but names it in no environment
+# variable, so PR #1215's documented
+# '-DCMAKE_TOOLCHAIN_FILE=${OE_CMAKE_TOOLCHAIN_FILE}' expands to nothing.
+# Point it at the real file.
+_ros_sdk_tc=$(ls $OECORE_NATIVE_SYSROOT/usr/share/cmake/*-toolchain.cmake 2>/dev/null | head -1)
+if [ -n "$_ros_sdk_tc" ]; then
+    OE_CMAKE_TOOLCHAIN_FILE=$_ros_sdk_tc
+    export OE_CMAKE_TOOLCHAIN_FILE
+fi
+unset _ros_sdk_tc
+ROSSDKEOF
+
     echo "export PYTHON3_NUMPY_INCLUDE_DIR="'$OECORE_TARGET_SYSROOT'"/usr/lib/python${PYTHON_BASEVERSION}/site-packages/numpy/core/include" >> ${S}/ros-sdk-env.sh
     echo "export PYTHONWARNINGS=ignore" >> ${S}/ros-sdk-env.sh
     echo "export AMENT_SKIP_SHELL_PATH=1" >> ${S}/ros-sdk-env.sh

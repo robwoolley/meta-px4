@@ -19,4 +19,14 @@ PX4_ROS_SDK_EXTRAS ??= "1"
 
 TOOLCHAIN_HOST_TASK:append = "${@' nativesdk-ros-sdk-env' if d.getVar('PX4_ROS_SDK_EXTRAS') == '1' else ''}"
 
-TOOLCHAIN_TARGET_TASK:append = "${@' px4-msgs px4-ros2-cpp micro-xrce-dds-agent' if d.getVar('PX4_ROS_SDK_EXTRAS') == '1' else ''}"
+# example-interfaces is not a PX4 package, but ros2/examples' action, service
+# and client packages all find_package() it and ROS_SDK_TARGET_PACKAGES does
+# not include it -- so without this, every one of them fails to configure with
+# "Could not find a package configuration file provided by example_interfaces"
+# (observed: 0 of 22 packages built). meta-ros2-jazzy already carries
+# example-interfaces_0.12.1-1; putting it in the SDK sysroot mirrors what
+# px4-ros-dev-image does for the on-target build (specs/008), so both
+# milestones build the same source against a packaged copy rather than
+# regenerating the message code. Cloning ros2/example_interfaces into the
+# colcon workspace, as PR #1215's instructions do, is the alternative.
+TOOLCHAIN_TARGET_TASK:append = "${@' px4-msgs px4-ros2-cpp micro-xrce-dds-agent example-interfaces' if d.getVar('PX4_ROS_SDK_EXTRAS') == '1' else ''}"

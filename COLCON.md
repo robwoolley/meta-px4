@@ -223,7 +223,19 @@ colcon build --cmake-args \
 
 Note there is no `-DPYTHON_SOABI=...` here, and no `example_interfaces` clone.
 Both are handled — the first by `ros-sdk-env`, the second by
-`example-interfaces` being in the SDK's target sysroot.
+`example-interfaces` being installed into the SDK's target sysroot by this
+layer's `ros2-image-sdktest.bbappend`. It is **not** in upstream's
+`ROS_SDK_TARGET_PACKAGES`, so without that addition every action, service and
+client example fails to configure and you get 0 of 22 packages built.
+
+`ros-sdk-env` also supplies three things a stock OE SDK does not, each of
+which was a real failure before it did (see spec 009 §6):
+
+| variable | why it matters |
+|---|---|
+| `OE_CMAKE_TOOLCHAIN_FILE` | the SDK ships a toolchain file but names it in no variable, so the command above would pass an empty path |
+| `PYTHON_SOABI` | derived from the target sysroot; the parse-time computation yields an empty architecture field under `class-nativesdk` |
+| `AMENT_PREFIX_PATH` | comes from sourcing the target's `setup.bash`, enabled by `ROS_SDK_UNIFY` (defaulted to `bash` here) |
 
 ### 2.6 The thing that makes SDK builds subtle
 

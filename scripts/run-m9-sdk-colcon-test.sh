@@ -88,6 +88,15 @@ PATH_BEFORE="${PATH}"
         echo "       -- this is not a normal OE SDK environment; aborting" >&2
         exit 1
     fi
+    # Set by ros-sdk-env, not by the stock OE SDK -- the SDK ships a toolchain
+    # file but names it in no variable of its own. Fail with that explanation
+    # rather than an 'unbound variable' abort from set -u.
+    if [ -z "${OE_CMAKE_TOOLCHAIN_FILE:-}" ]; then
+        echo "error: OE_CMAKE_TOOLCHAIN_FILE unset after sourcing the SDK env." >&2
+        echo "       ros-sdk-env should set it; check that" >&2
+        echo "       nativesdk-ros-sdk-env is in the SDK's host manifest." >&2
+        exit 1
+    fi
 
     echo "=== AC-3: host PATH must not contain the target sysroot's ROS bin ==="
     ac3_status=PASS
