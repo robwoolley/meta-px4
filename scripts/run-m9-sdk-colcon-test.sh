@@ -81,18 +81,32 @@ PATH_BEFORE="${PATH}"
         echo "OECORE_TARGET_SYSROOT:   ${OECORE_TARGET_SYSROOT:-UNSET}"
     } 2>&1 | tee "${LOGDIR}/ac2-sdk-env.log"
 
+    # Bail clearly rather than dying on 'unbound variable' under set -u: every
+    # check below is meaningless without this, so say so in as many words.
+    if [ -z "${OECORE_TARGET_SYSROOT:-}" ]; then
+        echo "error: OECORE_TARGET_SYSROOT unset after sourcing ${ENV_SETUP}" >&2
+        echo "       -- this is not a normal OE SDK environment; aborting" >&2
+        exit 1
+    fi
+
     echo "=== AC-3: host PATH must not contain the target sysroot's ROS bin ==="
+    ac3_status=PASS
     {
-        if echo "${PATH}" | tr ':' '\n' | grep -q "^${OECORE_TARGET_SYSROOT}/opt/ros/"; then
+        if echo "${PATH}" | tr ':' '\n' | grep -qF "${OECORE_TARGET_SYSROOT}/opt/ros/"; then
             echo "FAIL: PATH contains ${OECORE_TARGET_SYSROOT}/opt/ros/... entries:"
-            echo "${PATH}" | tr ':' '\n' | grep "^${OECORE_TARGET_SYSROOT}/opt/ros/"
+            echo "${PATH}" | tr ':' '\n' | grep -F "${OECORE_TARGET_SYSROOT}/opt/ros/"
             echo "=> skip_shell_path.patch is not taking effect"
+            ac3_status=FAIL
         else
             echo "PASS: no ${OECORE_TARGET_SYSROOT}/opt/ros/* entries on PATH"
         fi
         echo "--- PATH entries added by sourcing the SDK env ---"
         echo "${PATH}" | tr ':' '\n' | grep -vxF -f <(echo "${PATH_BEFORE}" | tr ':' '\n') || true
     } 2>&1 | tee "${LOGDIR}/ac3-path.log"
+    # ac3_status is set inside the { } above, which runs in this shell (brace
+    # group, not a subshell), so it survives -- but the pipe to tee does put
+    # the group in a subshell, so re-derive it from the log instead.
+    grep -q "^FAIL:" "${LOGDIR}/ac3-path.log" && ac3_status=FAIL || ac3_status=PASS
 
     if [ ! -d "${WS_DIR}/src/examples" ]; then
         echo "=== fetching ros2/examples @ ${EXAMPLES_REV} ==="
@@ -103,24 +117,43 @@ PATH_BEFORE="${PATH}"
 
     echo "=== AC-4: colcon cross-build (no hand-exported variables) ==="
     cd "${WS_DIR}"
+    # PIPESTATUS, not $?: piping into tee would otherwise report tee's exit
+    # status and a failed cross-build would silently look like a pass.
+    set +e
     colcon build \
         --cmake-args \
             "-DCMAKE_TOOLCHAIN_FILE=${OE_CMAKE_TOOLCHAIN_FILE}" \
             -DBUILD_TESTING=OFF \
         2>&1 | tee "${LOGDIR}/ac4-colcon-build.log"
+    ac4_rc=${PIPESTATUS[0]}
+    set -e
+    echo "colcon build exit status: ${ac4_rc}"
 
+    # AC-5 still runs even if AC-4 failed -- whatever did get built is worth
+    # inspecting, and a partial result is more informative than none.
     echo "=== AC-5: are the artifacts target binaries? ==="
     {
-        find "${WS_DIR}/install" -type f -name 'publisher_member_function' \
-             -o -type f -name 'subscriber_member_function' | while read -r f; do
+        # The -o branches are parenthesised so the implicit -print applies to
+        # both, not just the last one.
+        find "${WS_DIR}/install" -type f \
+             \( -name 'publisher_member_function' \
+                -o -name 'subscriber_member_function' \) | while read -r f; do
             echo "--- ${f}"
             file "${f}"
         done
         echo "--- for comparison, a host binary ---"
         file "$(command -v git)"
     } 2>&1 | tee "${LOGDIR}/ac5-elf-type.log"
+
+    echo
+    echo "=== summary ==="
+    echo "AC-3 (host PATH clean):   ${ac3_status}"
+    echo "AC-4 (colcon cross-build): $([ "${ac4_rc}" -eq 0 ] && echo PASS || echo FAIL)"
+    [ "${ac3_status}" = PASS ] && [ "${ac4_rc}" -eq 0 ]
 )
+rc=$?
 
 echo
 echo "=== done -- logs in ${LOGDIR} ==="
 echo "Copy an executable to a running target to finish AC-5's runtime half."
+exit "${rc}"
