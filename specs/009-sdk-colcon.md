@@ -1,20 +1,24 @@
 # Spec 009 (M9): ROS 2 SDK for host-side colcon cross-builds
 
-- **Status:** In progress, nearly done. REQ-0 through REQ-6 are
-  complete: the SDK builds, its environment is correct, and `colcon
-  build` of `ros2/examples` cross-compiles all 22 packages in
-  2 min 21 s with no hand-exported variables (§6). **AC-3 is met** —
-  the jazzy forward-port of `skip_shell_path.patch` is now demonstrated
-  to *work*, not merely apply, which took defaulting `ROS_SDK_UNIFY` to
-  `"bash"` to make testable at all. Outstanding: the runtime half of
-  AC-5 (running a cross-built binary on a target), and REQ-8's
-  documentation of the carried deltas' drop conditions.
+- **Status: Done.** All requirements complete and all six acceptance
+  criteria met against real runs (§6, §7). `colcon build` of
+  `ros2/examples` cross-compiles all 22 packages in the SDK in
+  2 min 21 s with no hand-exported variables, and a resulting
+  executable runs on M8's target image, talking to the bitbake-packaged
+  subscriber with a BuildID matching the host-side artifact.
 
-  Three defects in the carried PR #1261 recipe were found by *using*
-  the SDK rather than by building it (§6) — a malformed `PYTHON_SOABI`,
-  a missing `OE_CMAKE_TOOLCHAIN_FILE`, and an unset
-  `AMENT_PREFIX_PATH`. All three are fixed here and worth reporting
-  upstream.
+  **AC-3 is met** — the jazzy forward-port of `skip_shell_path.patch`
+  is demonstrated to *work*, not merely apply. An earlier apparent pass
+  was withdrawn as vacuous; making it a real test required defaulting
+  `ROS_SDK_UNIFY` to `"bash"` so that something actually tried to
+  pollute `PATH`.
+
+  Building the SDK proved almost nothing about whether it worked: five
+  of the seven carried deltas (§6 REQ-8) were found by *installing and
+  using* it. Three are defects in PR #1261 itself — a malformed
+  `PYTHON_SOABI` under `class-nativesdk`, a missing
+  `OE_CMAKE_TOOLCHAIN_FILE`, and an unset `AMENT_PREFIX_PATH` — and are
+  worth reporting upstream.
 - **Created:** 2026-08-18
 - **Depends on:** [000-architecture.md](000-architecture.md) (M9 row),
   [007-sitl-gazebo-ros2.md](007-sitl-gazebo-ros2.md) (the
@@ -513,10 +517,59 @@ example_interfaces". Added to the `ros2-image-sdktest` bbappend's
 target task, mirroring what `px4-ros-dev-image` already did for
 [008](008-ontarget-colcon.md).
 
-### REQ-7 / REQ-8 — in progress
+### REQ-7 — complete
 
-[COLCON.md](../COLCON.md) documents the workflow; the runtime half of
-AC-5 (running a cross-built binary on a target) is not yet done.
+The runtime half, via `scripts/run-m9-ac5-target-run.sh`: it boots M8's
+`px4-ros-dev-image` (which already carries the ROS 2 runtime the
+cross-built binary links against, plus the packaged subscriber to pair
+with), copies in **only** the host-cross-built executable, and runs it.
+
+```
+--- as the target sees it ---
+/tmp/sdk_publisher: ELF 64-bit LSB pie executable, x86-64 ...
+  BuildID[sha1]=70bf6c3d4aa585cd4a39f98b109791c805614b32
+--- dynamic dependencies resolve? ---
+all libraries resolved
+
+--- publisher (SDK cross-built on host) ---
+[1787170629.062645308] [minimal_publisher]: Publishing: 'Hello, world! 0'
+--- subscriber (bitbake-packaged, in image) ---
+[1787170629.062913625] [minimal_subscriber]: I heard: 'Hello, world! 0'
+```
+
+The BuildID matches the host-side artifact exactly, so the thing that
+ran is provably the thing the SDK produced, and `ldd` reports no
+unresolved libraries against the image's own `/opt/ros/jazzy`. Messages
+arrive ~270 microseconds after publication.
+
+This closes the gap that AC-5's original wording left open: on a
+same-architecture SDK, `file` cannot prove a binary is a target
+artifact, but an executable that links and runs against the *image's*
+ROS 2 and talks to a bitbake-built peer can only be one.
+
+Note the three-way result across both milestones. The same source
+(`ros2/examples` at `07008852`) has now been built by bitbake, by
+colcon on the target ([008](008-ontarget-colcon.md)), and by colcon in
+the SDK — and artifacts from the last two interoperate with the first.
+
+### REQ-8 — complete
+
+[COLCON.md](../COLCON.md) documents the workflow, prerequisites and the
+carried deltas. The deltas and their drop conditions:
+
+| delta | why | drop when |
+|---|---|---|
+| `ros-sdk-env` recipe | meta-ros PR #1261, still open against `master-next` | the PR merges and reaches this project's meta-ros branch |
+| `S = "${UNPACKDIR}"` + `mkdir -p` in it | PR #1261 as written is rejected by wrynose's `do_unpack` | PR #1261 is fixed upstream for this OE version |
+| runtime-derived `PYTHON_SOABI` | PR #1261's parse-time computation yields an empty architecture under `class-nativesdk` | upstream computes it correctly for nativesdk, or OE exposes the SDK target's `TUNE_ARCH` there |
+| `OE_CMAKE_TOOLCHAIN_FILE` export | no OE SDK sets it, though PR #1215's documented command needs it | OE-core exports it from the SDK environment itself |
+| `ROS_SDK_UNIFY ??= "bash"` | without it `AMENT_PREFIX_PATH` is unset and no cross-build works | upstream picks a non-empty default, or provides `AMENT_PREFIX_PATH` another way |
+| `skip_shell_path.patch` for jazzy | meta-ros carries it only under `meta-ros2-kilted` | the patch reaches jazzy upstream |
+| `example-interfaces` in the SDK | `ROS_SDK_TARGET_PACKAGES` omits it, so `ros2/examples` cannot configure | upstream adds it (or an equivalent) to that list |
+
+The last four are new findings from this milestone rather than
+carried-from-upstream fixes, and are the ones most worth reporting back
+to meta-ros.
 
 ## 7. Acceptance criteria
 
@@ -549,21 +602,23 @@ AC-5 (running a cross-built binary on a target) is not yet done.
   `jazzy`) reports `22 packages finished [2min 21s]` in the SDK
   environment, with no hand-exported `PYTHON_SOABI`,
   `AMENT_PREFIX_PATH` or `PYTHONPATH` (REQ-6, §6).
-- **AC-5** — **PARTIALLY MET.** The cross-built C++ executables are
-  target binaries, but note that this criterion as originally written
+- **AC-5** — **MET**, though the criterion as originally written
   ("`file` reports the target's ELF machine type") is too weak for a
-  same-architecture SDK: host and target are both x86-64 here, so the
-  machine type cannot distinguish them. The real discriminators are the
-  dynamic loader path and the kernel ABI floor:
+  same-architecture SDK: host and target are both x86-64 here, so
+  machine type cannot distinguish them. The static discriminators are
+  the dynamic loader path and kernel ABI floor —
 
   ```
   cross-built: interpreter /usr/lib/ld-linux-x86-64.so.2 ... for GNU/Linux 5.15.0
   host git:    interpreter /lib64/ld-linux-x86-64.so.2  ... for GNU/Linux 3.2.0
   ```
 
-  `/usr/lib/` is OE's target layout; `/lib64/` is the host's. Not yet
-  done: running one of these on a target and exchanging messages with a
-  packaged counterpart, which is the other half of REQ-7.
+  (`/usr/lib/` is OE's target layout, `/lib64/` the host's) — but the
+  conclusive evidence is runtime: the executable was copied into M8's
+  image and ran there, `ldd` resolving entirely against the image's own
+  `/opt/ros/jazzy`, exchanging messages with the bitbake-packaged
+  subscriber, with a BuildID identical to the host-side artifact (§6,
+  REQ-7).
 - **AC-6** — A package depending on this project's own `px4-msgs`
   builds in the SDK environment, proving REQ-2's target-task additions
   are reachable from a colcon workspace (not just stock ROS 2).
