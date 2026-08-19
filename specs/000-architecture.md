@@ -223,6 +223,7 @@ machine-checkable acceptance criteria) is merged.
 | M6 | Productization: single-invocation multiconfig build, eSDK, `yocto-check-layer`, CI pipeline, docs | 006 (TBD) | CI runs M1/M3/M4 gates per commit |
 | M7 | `px4-autopilot` SITL + Gazebo + ROS 2 + QGroundControl (no real hardware available; pursued alongside/instead of M5) | [007](007-sitl-gazebo-ros2.md) | `px4-autopilot`'s `gz_bridge`/`gz_plugins` build for real (not stub targets); Gazebo `x500` model flies under ROS 2 offboard control; QGC observes a live heartbeat |
 | M8 | On-target colcon build tooling packagegroup | [008](008-ontarget-colcon.md) | Image with `packagegroup-px4-ros-dev` boots; `colcon build` of `ros2/examples` (branch `jazzy`) succeeds *in the guest*; a colcon-built node exchanges messages with a bitbake-packaged one |
+| M9 | ROS 2 SDK for host-side colcon cross-builds | [009](009-sdk-colcon.md) | `populate_sdk` yields an SDK whose sourced env gives `colcon` + `OE_CMAKE_TOOLCHAIN_FILE` + a computed `PYTHON_SOABI`; `colcon build` of `ros2/examples` (branch `jazzy`) cross-compiles with no hand-exported vars; artifacts are target ELFs that run on target |
 
 ## 6. Risks
 
