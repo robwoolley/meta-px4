@@ -11,6 +11,8 @@ SRC_URI[sha256sum] = "7bf45ad4a250e5e9928c33b5ff56afed4dbc6f99c8f58d05051e2a3081
 # outright in a network-isolated build.
 SRC_URI += "file://0001-setup.py-drop-setup_requires-future.patch"
 
+S = "${WORKDIR}/git"
+
 inherit setuptools3 pypi
 
 BBCLASSEXTEND = "native nativesdk"
