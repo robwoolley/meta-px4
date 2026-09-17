@@ -30,7 +30,7 @@ SRC_URI = "https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-a
 SRC_URI[gcc-aarch64.sha256sum] = "06979e0c8171de58e5dc2a2b2019330a290f30930f27728af98a83e1a7369b3a"
 SRC_URI[gcc-x86_64.sha256sum] = "563bebb2b97d53382b956d6ee1fe61e2cae26699901417234a37df505ef9b5fa"
 
-S = "${UNPACKDIR}/arm-gnu-toolchain-${PV}-${HOST_ARCH}-${BINNAME}"
+S = "${WORKDIR}/arm-gnu-toolchain-${PV}-${HOST_ARCH}-${BINNAME}"
 
 UPSTREAM_CHECK_URI = "https://gitlab.arm.com/tooling/gnu-toolchains-for-arm/-/branches"
 UPSTREAM_CHECK_REGEX = "releases/(?P<pver>.+)\?"
