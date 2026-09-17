@@ -38,6 +38,8 @@ SRCREV = "d6f12ad1c4f70ad3230afd7d86e971421e02fef4"
 SRCREV_microcdr = "3d1b17703c7cf4f22def2910bc845bdb5152d7b5"
 SRCREV_FORMAT = "px4_microcdr"
 
+S = "${WORKDIR}/git"
+
 EXTRA_OECMAKE = " \
     -DCONFIG=px4_fmu-v6x_default \
 "
